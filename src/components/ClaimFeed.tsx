@@ -11,11 +11,13 @@ const MULTIVAULT_ADDRESS = '0x2Ece8D4dEdcB9918A398528f3fa4688b1d2CAB91';
 function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
   const { address, walletClient, publicClient } = useWallet();
   const [isPending, setIsPending] = useState(false);
+  const [optimisticSupport, setOptimisticSupport] = useState<bigint | null>(null);
+  const [optimisticOppose, setOptimisticOppose] = useState<bigint | null>(null);
   
   // The SDK queries return a slightly different shape
   const curveId = BigInt(1); // Default Curve
-  const supportShares = claim.term?.vaults?.[0]?.total_shares || '0';
-  const opposeShares = claim.counter_term?.vaults?.[0]?.total_shares || '0';
+  const supportShares = optimisticSupport !== null ? optimisticSupport : BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
+  const opposeShares = optimisticOppose !== null ? optimisticOppose : BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
 
   const handleSupport = async () => {
     if (!address || !walletClient || !publicClient) return;
@@ -29,7 +31,12 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
           value: parseEther("0.001"), // 0.001 tTRUST (min deposit)
         }
       );
-      refetch();
+      const currentShares = BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
+      setOptimisticSupport(currentShares + parseEther("0.001")); // Optimistically add 0.001 shares
+      setTimeout(async () => {
+        await refetch();
+        setOptimisticSupport(null);
+      }, 4000); // 4s delay for subgraph indexing
     } catch (e) {
       console.error(e);
     }
@@ -48,7 +55,12 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
           value: parseEther("0.001"), // 0.001 tTRUST (min deposit)
         }
       );
-      refetch();
+      const currentShares = BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
+      setOptimisticOppose(currentShares + parseEther("0.001")); // Optimistically add 0.001 shares
+      setTimeout(async () => {
+        await refetch();
+        setOptimisticOppose(null);
+      }, 4000); // 4s delay for subgraph indexing
     } catch (e) {
       console.error(e);
     }
@@ -61,7 +73,7 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
   return (
     <div className="border border-white/10 p-5 bg-[#0a0a0a] mb-6 transition-all hover:bg-[#111] cursor-default flex space-x-4">
       {/* Avatar Placeholder */}
-      <div className="flex-shrink-0">
+      <div className="shrink-0">
         <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center font-mono text-sm text-white/50">
           {creatorAddress.slice(2, 4).toUpperCase()}
         </div>
@@ -90,24 +102,28 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
         <div className="flex items-center space-x-6 text-sm text-white/50 font-mono">
           <button 
             onClick={handleSupport}
-            disabled={isPending}
+            disabled={isPending || optimisticSupport !== null}
             className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-50 group"
           >
             <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
               ↑ SUPPORT
             </span>
-            <span>{Number(formatUnits(BigInt(supportShares), 18)).toFixed(4)}</span>
+            <span className={optimisticSupport !== null ? "text-green-400 font-bold" : ""}>
+              {Number(formatUnits(supportShares, 18)).toFixed(4)}
+            </span>
           </button>
           
           <button 
             onClick={handleOppose}
-            disabled={isPending}
+            disabled={isPending || optimisticOppose !== null}
             className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-50 group"
           >
             <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
               ↓ OPPOSE
             </span>
-            <span>{Number(formatUnits(BigInt(opposeShares), 18)).toFixed(4)}</span>
+            <span className={optimisticOppose !== null ? "text-red-400 font-bold" : ""}>
+              {Number(formatUnits(opposeShares, 18)).toFixed(4)}
+            </span>
           </button>
         </div>
       </div>
