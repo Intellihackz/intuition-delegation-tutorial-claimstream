@@ -1,0 +1,10 @@
+{
+  "0x9c103d804bc1867F429a37707Dc5d5C9b29D7a6C": {
+    "delegate": "0x0F0e27793dEc11A0CA2A9dbE9A2456BA6f7b0abC",
+    "delegator": "0x9c103d804bc1867F429a37707Dc5d5C9b29D7a6C",
+    "authority": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "caveats": [],
+    "salt": "0",
+    "signature": "0x3dd5dd58705ab7f32fc8bdd8c218ef2dd23be9332325935b4d9b99badc011df36daf24e7994673762b20effbe1b807d17d9a78cdf4a8aadd06e7e9c7674582581c"
+  }
+}

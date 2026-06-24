@@ -1,6 +1,7 @@
 import { ConnectButton } from '@/components/ConnectButton';
 import { ClaimFeed } from '@/components/ClaimFeed';
 import { CreateClaimForm } from '@/components/CreateClaimForm';
+import { UpgradeAccount } from '@/components/UpgradeAccount';
 
 export default function Home() {
   return (
@@ -16,6 +17,7 @@ export default function Home() {
           <ConnectButton />
         </header>
 
+        <UpgradeAccount />
         <CreateClaimForm />
         
         <div className="mt-20">
