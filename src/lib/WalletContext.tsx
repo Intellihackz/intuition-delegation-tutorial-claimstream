@@ -28,6 +28,7 @@ interface WalletContextType {
   publicClient: PublicClient;
   connect: () => Promise<void>;
   disconnect: () => void;
+  ensureChain: () => Promise<void>;
 }
 
 const publicClient = createPublicClient({
@@ -36,6 +37,22 @@ const publicClient = createPublicClient({
 }) as PublicClient;
 
 const WalletContext = createContext<WalletContextType | null>(null);
+
+// Switch the connected wallet to Intuition Testnet, adding it if MetaMask
+// doesn't yet know about the chain (error 4902 = "Unrecognized chain ID").
+async function switchToIntuition(client: WalletClient) {
+  try {
+    await client.switchChain({ id: intuitionTestnet.id });
+  } catch (err: any) {
+    const code = err?.code ?? err?.cause?.code;
+    if (code === 4902 || /Unrecognized chain|wallet_addEthereumChain/i.test(err?.message ?? '')) {
+      await client.addChain({ chain: intuitionTestnet });
+      await client.switchChain({ id: intuitionTestnet.id });
+    } else {
+      throw err;
+    }
+  }
+}
 
 export function WalletProvider({ children }: { children: ReactNode }) {
   const [address, setAddress] = useState<Address | null>(null);
@@ -49,6 +66,9 @@ export function WalletProvider({ children }: { children: ReactNode }) {
           transport: custom((window as any).ethereum)
         });
         const [addr] = await client.requestAddresses();
+        // Make sure the wallet is actually on Intuition Testnet before we
+        // hand the client to components that will send transactions.
+        await switchToIntuition(client);
         setAddress(addr);
         setWalletClient(client as WalletClient);
       } catch (e) {
@@ -57,6 +77,13 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     } else {
       alert("Please install MetaMask!");
     }
+  };
+
+  // Re-check the active chain right before sending a transaction, in case the
+  // user switched networks in MetaMask after connecting.
+  const ensureChain = async () => {
+    if (!walletClient) throw new Error('Wallet not connected');
+    await switchToIntuition(walletClient);
   };
 
   const disconnect = () => {
@@ -80,7 +107,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <WalletContext.Provider value={{ address, walletClient, publicClient, connect, disconnect }}>
+    <WalletContext.Provider value={{ address, walletClient, publicClient, connect, disconnect, ensureChain }}>
       {children}
     </WalletContext.Provider>
   );
