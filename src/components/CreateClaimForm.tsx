@@ -3,13 +3,18 @@
 import { useState } from 'react';
 import { useWallet } from '@/lib/WalletContext';
 import { createAtomFromString, createTripleStatement } from '@0xintuition/sdk';
-import { parseEther } from 'viem';
+import { parseAbi } from 'viem';
 
 const MULTIVAULT_ADDRESS = '0x2Ece8D4dEdcB9918A398528f3fa4688b1d2CAB91';
 
+// Each assets[i] for createTriples must be >= getTripleCost(); paying less
+// reverts with MultiVault_InsufficientBalance. The cost is governance-set, so
+// read it on-chain rather than hardcoding a value.
+const costAbi = parseAbi(['function getTripleCost() view returns (uint256)']);
+
 export function CreateClaimForm() {
   const [claimText, setClaimText] = useState('');
-  const { address, walletClient, publicClient } = useWallet();
+  const { address, walletClient, publicClient, ensureChain } = useWallet();
   const [isPending, setIsPending] = useState(false);
 
   const subjectUri = `caip10:eip155:1:${address}`; // User's atom
@@ -22,6 +27,9 @@ export function CreateClaimForm() {
     setIsPending(true);
 
     try {
+      // Guard against a wallet sitting on the wrong network (e.g. mainnet).
+      await ensureChain();
+
       const patchedWalletClient = { ...walletClient, account: address };
       const config = { address: MULTIVAULT_ADDRESS, walletClient: patchedWalletClient as any, publicClient };
 
@@ -31,15 +39,23 @@ export function CreateClaimForm() {
       const predicateAtom = await createAtomFromString(config, predicateUri);
       const objectAtom = await createAtomFromString(config, objectUri);
 
-      // Step 2: Create the actual Triple via SDK Quickstart
+      // Step 2: Create the actual Triple via SDK Quickstart.
+      // assets[i] and msg.value must both equal (at least) the on-chain triple
+      // creation cost — read it live so we never underpay.
+      const tripleCost = await publicClient.readContract({
+        address: MULTIVAULT_ADDRESS,
+        abi: costAbi,
+        functionName: 'getTripleCost',
+      });
+
       await createTripleStatement(config, {
         args: [
           [subjectAtom.state.termId],
           [predicateAtom.state.termId],
           [objectAtom.state.termId],
-          [parseEther('0.001')] // Initial deposit to satisfy the bonding curve minDeposit
+          [tripleCost] // Per-item payment; must be >= getTripleCost()
         ],
-        value: parseEther('0.001'), // Value to cover the deposit
+        value: tripleCost, // msg.value must equal sum(assets[])
       });
 
       setClaimText('');
