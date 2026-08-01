@@ -1,11 +1,11 @@
 import { createConfig, http } from 'wagmi';
 import { injected } from 'wagmi/connectors';
-import { intuitionTestnet } from './chains';
+import { intuitionMainnet } from './chains';
 
 export const wagmiConfig = createConfig({
-  chains: [intuitionTestnet],
+  chains: [intuitionMainnet],
   connectors: [injected({ target: 'metaMask' })],
   transports: {
-    [intuitionTestnet.id]: http(),
+    [intuitionMainnet.id]: http(),
   },
 });

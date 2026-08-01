@@ -19,7 +19,7 @@ export function useSmartAccountUpgrade() {
       setIsPending(true);
       setError(null);
 
-      // Ensure the wallet is on Intuition Testnet before upgrading.
+      // Ensure the wallet is on Intuition Mainnet before upgrading.
       await ensureChain();
 
       // EIP-5792: ask MetaMask to send a batch of calls. viem's signAuthorization

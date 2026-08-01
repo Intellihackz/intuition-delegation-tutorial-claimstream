@@ -4,8 +4,7 @@ import { useState } from 'react';
 import { useWallet } from '@/lib/WalletContext';
 import { createAtomFromString, createTripleStatement } from '@0xintuition/sdk';
 import { parseAbi } from 'viem';
-
-const MULTIVAULT_ADDRESS = '0x2Ece8D4dEdcB9918A398528f3fa4688b1d2CAB91';
+import { MULTIVAULT } from '@/lib/constants';
 
 // Each assets[i] for createTriples must be >= getTripleCost(); paying less
 // reverts with MultiVault_InsufficientBalance. The cost is governance-set, so
@@ -31,7 +30,7 @@ export function CreateClaimForm() {
       await ensureChain();
 
       const patchedWalletClient = { ...walletClient, account: address };
-      const config = { address: MULTIVAULT_ADDRESS, walletClient: patchedWalletClient as any, publicClient };
+      const config = { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient };
 
       // Step 1: Create Atoms (with zero deposit as per docs)
       // The SDK's createAtomFromString natively handles exists checks or just creating it
@@ -43,7 +42,7 @@ export function CreateClaimForm() {
       // assets[i] and msg.value must both equal (at least) the on-chain triple
       // creation cost — read it live so we never underpay.
       const tripleCost = await publicClient.readContract({
-        address: MULTIVAULT_ADDRESS,
+        address: MULTIVAULT,
         abi: costAbi,
         functionName: 'getTripleCost',
       });

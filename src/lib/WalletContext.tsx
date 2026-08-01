@@ -3,24 +3,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { createWalletClient, custom, createPublicClient, http, WalletClient, PublicClient, Address, defineChain } from 'viem';
 
-export const intuitionTestnet = defineChain({
-  id: 13579,
-  name: 'Intuition Testnet',
-  nativeCurrency: {
-    decimals: 18,
-    name: 'Intuition Testnet TRUST',
-    symbol: 'tTRUST',
-  },
-  rpcUrls: {
-    default: {
-      http: ['https://testnet.rpc.intuition.systems'],
-      webSocket: ['wss://testnet.rpc.intuition.systems'],
-    },
-  },
-  blockExplorers: {
-    default: { name: 'Explorer', url: 'https://testnet.explorer.intuition.systems' },
-  },
-});
+import { intuitionMainnet } from './chains';
 
 interface WalletContextType {
   address: Address | null;
@@ -32,22 +15,22 @@ interface WalletContextType {
 }
 
 const publicClient = createPublicClient({
-  chain: intuitionTestnet,
+  chain: intuitionMainnet,
   transport: http(),
 }) as PublicClient;
 
 const WalletContext = createContext<WalletContextType | null>(null);
 
-// Switch the connected wallet to Intuition Testnet, adding it if MetaMask
+// Switch the connected wallet to Intuition Mainnet, adding it if MetaMask
 // doesn't yet know about the chain (error 4902 = "Unrecognized chain ID").
 async function switchToIntuition(client: WalletClient) {
   try {
-    await client.switchChain({ id: intuitionTestnet.id });
+    await client.switchChain({ id: intuitionMainnet.id });
   } catch (err: any) {
     const code = err?.code ?? err?.cause?.code;
     if (code === 4902 || /Unrecognized chain|wallet_addEthereumChain/i.test(err?.message ?? '')) {
-      await client.addChain({ chain: intuitionTestnet });
-      await client.switchChain({ id: intuitionTestnet.id });
+      await client.addChain({ chain: intuitionMainnet });
+      await client.switchChain({ id: intuitionMainnet.id });
     } else {
       throw err;
     }
@@ -62,15 +45,24 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     if (typeof window !== 'undefined' && (window as any).ethereum) {
       try {
         const client = createWalletClient({
-          chain: intuitionTestnet,
+          chain: intuitionMainnet,
           transport: custom((window as any).ethereum)
         });
         const [addr] = await client.requestAddresses();
-        // Make sure the wallet is actually on Intuition Testnet before we
+        
+        // Create a new client specifically bound to the user's account
+        // to prevent "Could not find an Account" errors in viem
+        const boundClient = createWalletClient({
+          account: addr,
+          chain: intuitionMainnet,
+          transport: custom((window as any).ethereum)
+        });
+
+        // Make sure the wallet is actually on Intuition Mainnet before we
         // hand the client to components that will send transactions.
         await switchToIntuition(client);
         setAddress(addr);
-        setWalletClient(client as WalletClient);
+        setWalletClient(boundClient as WalletClient);
       } catch (e) {
         console.error(e);
       }

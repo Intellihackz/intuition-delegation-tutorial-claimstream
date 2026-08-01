@@ -5,8 +5,11 @@ import { useGetTriplesQuery, useInfiniteGetTriplesQuery } from '@0xintuition/gra
 import { multiVaultDeposit } from '@0xintuition/protocol';
 import { formatUnits, parseEther } from 'viem';
 import { useState, useRef, useCallback } from 'react';
+import { MULTIVAULT } from '@/lib/constants';
 
-const MULTIVAULT_ADDRESS = '0x2Ece8D4dEdcB9918A398528f3fa4688b1d2CAB91';
+const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
+const reviveBigInt = (key: string, value: any) =>
+  typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value;
 
 function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
   const { address, walletClient, publicClient } = useWallet();
@@ -23,22 +26,47 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
     if (!address || !walletClient || !publicClient) return;
     setIsPending(true);
     try {
-      const patchedWalletClient = { ...walletClient, account: address };
-      await multiVaultDeposit(
-        { address: MULTIVAULT_ADDRESS, walletClient: patchedWalletClient as any, publicClient },
-        {
-          args: [address, claim.term_id, curveId, BigInt(0)],
-          value: parseEther("0.001"), // 0.001 tTRUST (min deposit)
+      const stored = localStorage.getItem(getStorageKey(address));
+      const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
+
+      if (currentDelegation) {
+        // 1-Click Staking (Relayer Path)
+        const res = await fetch('/api/stake', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            delegation: currentDelegation,
+            termId: claim.term_id,
+            curveId: curveId.toString(),
+            assets: parseEther("0.01").toString(),
+            userAddress: address
+          }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value)
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.details || err.error || 'Failed to stake via relayer');
         }
-      );
+      } else {
+        // Standard Staking (MetaMask popup)
+        const patchedWalletClient = { ...walletClient, account: address };
+        await multiVaultDeposit(
+          { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient },
+          {
+            args: [address, claim.term_id, curveId, BigInt(0)],
+            value: parseEther("0.01"), // 0.01 tTRUST (min deposit)
+          }
+        );
+      }
+      
       const currentShares = BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
       setOptimisticSupport(currentShares + parseEther("0.001")); // Optimistically add 0.001 shares
       setTimeout(async () => {
         await refetch();
         setOptimisticSupport(null);
       }, 4000); // 4s delay for subgraph indexing
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert(e.message || 'Transaction failed');
     }
     setIsPending(false);
   };
@@ -47,22 +75,47 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
     if (!address || !walletClient || !publicClient) return;
     setIsPending(true);
     try {
-      const patchedWalletClient = { ...walletClient, account: address };
-      await multiVaultDeposit(
-        { address: MULTIVAULT_ADDRESS, walletClient: patchedWalletClient as any, publicClient },
-        {
-          args: [address, claim.counter_term_id, curveId, BigInt(0)],
-          value: parseEther("0.001"), // 0.001 tTRUST (min deposit)
+      const stored = localStorage.getItem(getStorageKey(address));
+      const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
+
+      if (currentDelegation) {
+        // 1-Click Staking (Relayer Path)
+        const res = await fetch('/api/stake', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            delegation: currentDelegation,
+            termId: claim.counter_term_id,
+            curveId: curveId.toString(),
+            assets: parseEther("0.001").toString(),
+            userAddress: address
+          }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value)
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.details || err.error || 'Failed to stake via relayer');
         }
-      );
+      } else {
+        // Standard Staking (MetaMask popup)
+        const patchedWalletClient = { ...walletClient, account: address };
+        await multiVaultDeposit(
+          { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient },
+          {
+            args: [address, claim.counter_term_id, curveId, BigInt(0)],
+            value: parseEther("0.001"), // 0.001 tTRUST (min deposit)
+          }
+        );
+      }
+
       const currentShares = BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
       setOptimisticOppose(currentShares + parseEther("0.001")); // Optimistically add 0.001 shares
       setTimeout(async () => {
         await refetch();
         setOptimisticOppose(null);
       }, 4000); // 4s delay for subgraph indexing
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      alert(e.message || 'Transaction failed');
     }
     setIsPending(false);
   };

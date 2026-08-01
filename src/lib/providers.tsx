@@ -8,7 +8,7 @@ import { WagmiProvider } from 'wagmi';
 import { wagmiConfig } from './wagmi';
 
 // Ensure the SDK is configured before any React components render or query hooks fire
-configureClient({ apiUrl: 'https://testnet.intuition.sh/v1/graphql' });
+configureClient({ apiUrl: 'https://mainnet.intuition.sh/v1/graphql' });
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient());
