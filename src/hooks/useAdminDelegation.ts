@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useWallet } from '@/lib/WalletContext';
-import { 
-  Implementation, 
-  toMetaMaskSmartAccount, 
-  createDelegation, 
-  ScopeType, 
+import {
+  Implementation,
+  toMetaMaskSmartAccount,
+  createDelegation,
+  ScopeType,
   CaveatType,
-  MetaMaskSmartAccount 
+  MetaMaskSmartAccount
 } from '@metamask/smart-accounts-kit';
-import { encodeAbiParameters, encodeFunctionData, parseEther, type Hex, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
+import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
 import { MULTIVAULT, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
@@ -21,7 +21,7 @@ export function useAdminDelegation() {
   const { walletClient, publicClient, address, ensureChain } = useWallet();
   const [smartAccount, setSmartAccount] = useState<MetaMaskSmartAccount | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
-  const [delegation, setDelegation] = useState<any>(null);
+  const [delegation, setDelegation] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hsaBalance, setHsaBalance] = useState<bigint | null>(null);
   const [initialBudget, setInitialBudget] = useState<string>('0');
@@ -29,46 +29,57 @@ export function useAdminDelegation() {
   // Load existing delegation from local storage
   useEffect(() => {
     if (!address) {
-      setDelegation(null);
+      queueMicrotask(() => {
+        setDelegation(null);
+        setInitialBudget('0');
+      });
       return;
     }
     const saved = localStorage.getItem(getStorageKey(address));
     if (saved) {
       try {
-        setDelegation(JSON.parse(saved, (key, value) =>
+        const parsed = JSON.parse(saved, (key, value) =>
           typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value
-        ));
-        const savedBudget = localStorage.getItem(getBudgetStorageKey(address));
-        if (savedBudget) {
+        );
+        const savedBudget = localStorage.getItem(getBudgetStorageKey(address)) ?? '1';
+        queueMicrotask(() => {
+          setDelegation(parsed);
           setInitialBudget(savedBudget);
-        } else {
-          setInitialBudget('1'); // Fallback if they set it up before the progress bar update
-        }
+        });
       } catch (e) {
         console.error('Failed to parse saved delegation', e);
+        queueMicrotask(() => {
+          setDelegation(null);
+          setInitialBudget('0');
+        });
       }
     } else {
-      setDelegation(null);
-      setInitialBudget('0');
+      queueMicrotask(() => {
+        setDelegation(null);
+        setInitialBudget('0');
+      });
     }
   }, [address]);
 
   // Fetch HSA balance
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (delegation && smartAccount && publicClient) {
-      const fetchBalance = async () => {
-        try {
-          const bal = await publicClient.getBalance({ address: smartAccount.address });
-          setHsaBalance(bal);
-        } catch (e) {}
-      };
-      fetchBalance();
-      interval = setInterval(fetchBalance, 5000); // Poll every 5s
-    } else {
-      setHsaBalance(null);
+    if (!delegation || !smartAccount || !publicClient) {
+      queueMicrotask(() => setHsaBalance(null));
+      return;
     }
-    return () => clearInterval(interval);
+    let isMounted = true;
+    const fetchBalance = async () => {
+      try {
+        const bal = await publicClient.getBalance({ address: smartAccount.address });
+        if (isMounted) setHsaBalance(bal);
+      } catch {}
+    };
+    fetchBalance();
+    const interval = setInterval(fetchBalance, 5000); // Poll every 5s
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, [delegation, smartAccount, publicClient]);
 
   // Initialize the HSA instance (this does not deploy it on-chain yet)
@@ -79,7 +90,7 @@ export function useAdminDelegation() {
         const patchedClient = createWalletClient({
           account: address,
           chain: intuitionMainnet,
-          transport: custom((window as any).ethereum)
+          transport: custom((window as unknown as { ethereum: Parameters<typeof custom>[0] }).ethereum)
         });
 
         const sa = await toMetaMaskSmartAccount({
@@ -114,7 +125,12 @@ export function useAdminDelegation() {
         console.log('Deploying HSA...');
         const { factory, factoryData } = await smartAccount.getFactoryArgs();
         if (factory && factoryData) {
-          const hash = await walletClient.sendTransaction({ account: address, to: factory, data: factoryData });
+          const hash = await walletClient.sendTransaction({
+            account: address,
+            to: factory,
+            data: factoryData,
+            chain: intuitionMainnet,
+          });
           await publicClient.waitForTransactionReceipt({ hash });
         }
       }
@@ -128,6 +144,7 @@ export function useAdminDelegation() {
           account: address,
           to: smartAccount.address,
           value: budgetWei - saBal,
+          chain: intuitionMainnet,
         });
         await publicClient.waitForTransactionReceipt({ hash });
       }
@@ -143,6 +160,7 @@ export function useAdminDelegation() {
           functionName: 'approve',
           args: [smartAccount.address, ApprovalType.DEPOSIT],
         }),
+        chain: intuitionMainnet,
       });
       await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
@@ -185,10 +203,11 @@ export function useAdminDelegation() {
       localStorage.setItem(getBudgetStorageKey(address), budgetTrust);
       setInitialBudget(budgetTrust);
       console.log('Setup complete!');
-      
-    } catch (e: any) {
+
+    } catch (e: unknown) {
       console.error(e);
-      setError(e.shortMessage ?? e.message ?? 'An error occurred during setup');
+      const err = e as { shortMessage?: string; message?: string };
+      setError(err.shortMessage ?? err.message ?? 'An error occurred during setup');
     } finally {
       setIsDeploying(false);
     }
@@ -210,7 +229,7 @@ export function useAdminDelegation() {
       setIsDeploying(true);
       setError(null);
       await ensureChain();
-      
+
       console.log('Revoking MultiVault approval...');
       const hash = await walletClient.sendTransaction({
         account: address,
@@ -220,14 +239,16 @@ export function useAdminDelegation() {
           functionName: 'approve',
           args: [smartAccount.address, ApprovalType.NONE],
         }),
+        chain: intuitionMainnet,
       });
       await publicClient.waitForTransactionReceipt({ hash });
-      
+
       clearDelegation();
       console.log('Delegation successfully revoked on-chain.');
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
-      setError(e.shortMessage ?? e.message ?? 'Failed to revoke delegation');
+      const err = e as { shortMessage?: string; message?: string };
+      setError(err.shortMessage ?? err.message ?? 'Failed to revoke delegation');
     } finally {
       setIsDeploying(false);
     }

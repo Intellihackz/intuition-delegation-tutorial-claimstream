@@ -5,6 +5,7 @@ import { useWallet } from '@/lib/WalletContext';
 import { createAtomFromString, createTripleStatement } from '@0xintuition/sdk';
 import { parseAbi } from 'viem';
 import { MULTIVAULT } from '@/lib/constants';
+import type { Address } from 'viem';
 
 // Each assets[i] for createTriples must be >= getTripleCost(); paying less
 // reverts with MultiVault_InsufficientBalance. The cost is governance-set, so
@@ -30,7 +31,7 @@ export function CreateClaimForm() {
       await ensureChain();
 
       const patchedWalletClient = { ...walletClient, account: address };
-      const config = { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient };
+      const config = { address: MULTIVAULT as Address, walletClient: patchedWalletClient as any, publicClient };
 
       // Step 1: Create Atoms (with zero deposit as per docs)
       // The SDK's createAtomFromString natively handles exists checks or just creating it

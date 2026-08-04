@@ -213,7 +213,7 @@ export function ClaimFeed() {
   }, [isLoading, isFetchingNextPage, hasNextPage, fetchNextPage]);
 
   if (isLoading && !data) return <div className="animate-pulse flex space-x-4"><div className="flex-1 space-y-6 py-1"><div className="h-2 bg-white/20 rounded"></div><div className="space-y-3"><div className="grid grid-cols-3 gap-4"><div className="h-2 bg-white/20 rounded col-span-2"></div><div className="h-2 bg-white/20 rounded col-span-1"></div></div><div className="h-2 bg-white/20 rounded"></div></div></div></div>;
-  if (error) return <div className="text-red-500 font-mono">ERROR: {error.message}</div>;
+  if (error) return <div className="text-red-500 font-mono">ERROR: {(error as any)?.message || 'An error occurred'}</div>;
   if (!data?.pages[0]?.triples?.length) return <div className="text-white/50 text-center py-8 font-mono tracking-widest text-sm uppercase">NO CLAIMS FOUND. BE THE FIRST.</div>;
 
   return (
