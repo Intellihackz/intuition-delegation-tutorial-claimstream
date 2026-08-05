@@ -60,7 +60,7 @@ graph TD
 
 ---
 
-### Diagram 2: User Lifecycle Flow
+## Diagram 2: User Lifecycle Flow
 
 This sequence shows the end-to-end user journey: setup, 1-click staking, and on-chain revocation.
 
@@ -106,7 +106,7 @@ sequenceDiagram
 
 ---
 
-### Diagram 3: Data & Authority Flow
+## Diagram 3: Data & Authority Flow
 
 This diagram details how authority and data move during a 1-Click Stake operation:
 
@@ -177,4 +177,4 @@ Open [http://localhost:3000](http://localhost:3000) in your browser:
 
 Ready to build this from scratch in your own project? 
 
-👉 **[Read the Full Code Tutorial (TUTORIAL.md)](./TUTORIAL.md)** for a complete, step-by-step code walkthrough of the entire DApp!
+**[Read the Full Code Tutorial (TUTORIAL.md)](./TUTORIAL.md)** for a complete, step-by-step code walkthrough of the entire DApp!

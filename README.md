@@ -6,16 +6,16 @@ This repository serves as the official open-source demo application and educatio
 
 ---
 
-## 📚 Documentation & Guides
+## Documentation & Guides
 
 | Guide | Description |
 | :--- | :--- |
-| 🚀 **[GET_STARTED.md](./GET_STARTED.md)** | **High-Level Overview & Diagrams**: What ERC-7710/7702 are, System Architecture, User Lifecycle Flow, and Data/Authority Flow diagrams. |
-| 📖 **[TUTORIAL.md](./TUTORIAL.md)** | **Step-by-Step Developer Code Tutorial**: Full code walkthrough building this DApp from scratch. |
+| **[GET_STARTED.md](./GET_STARTED.md)** | **High-Level Overview & Diagrams**: What ERC-7710/7702 are, System Architecture, User Lifecycle Flow, and Data/Authority Flow diagrams. |
+| **[TUTORIAL.md](./TUTORIAL.md)** | **Step-by-Step Developer Code Tutorial**: Full code walkthrough building this DApp from scratch. |
 
 ---
 
-## 🎯 Educational Objectives
+## Educational Objectives
 
 Through this project, developers learn how to:
 1. **Upgrade to ERC-7702**: Upgrade a standard EOA to a Hybrid Smart Account (HSA) on Intuition Mainnet without changing wallet addresses.
@@ -26,7 +26,7 @@ Through this project, developers learn how to:
 
 ---
 
-## 🚀 App Features
+## App Features
 
 - **Intuition Claim Feed**: Paginated, infinite scroll feed of claims (triples) powered by `@0xintuition/graphql`.
 - **Claim Creation**: Form to publish Subjects, Predicates, and Objects (Atoms) and link them into Triples using `@0xintuition/sdk`.
@@ -35,7 +35,7 @@ Through this project, developers learn how to:
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 - **Framework**: Next.js 14 / 16 (App Router)
 - **Web3 Libraries**: `viem`, `@metamask/smart-accounts-kit`, `@0xintuition/protocol`, `@0xintuition/sdk`, `@0xintuition/graphql`
@@ -43,7 +43,7 @@ Through this project, developers learn how to:
 
 ---
 
-## 📦 Running Locally
+## Running Locally
 
 ### 1. Clone & Install
 ```bash
