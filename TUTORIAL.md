@@ -50,35 +50,59 @@ Here is exactly what our Claim Feed will do by the end of this tutorial:
 
 ## How This Will Work
 
-Before writing code, you need to understand the three core technologies powering this app.
+In standard Web3 applications, every single on-chain action requires the user to manually confirm a MetaMask popup and pay gas fees. For high-frequency social protocols like Intuition, where users constantly interact with knowledge graphs by creating claims, supporting statements, or opposing triples, this constant friction causes severe user drop-off. Delegated execution solves this UX bottleneck by allowing users to delegate specific, restricted permissions to an automated agent or backend relayer.
 
-### The Problem: Transaction Friction
+To understand how this architecture operates, it is helpful to explore the core protocol building blocks that make seamless delegated execution possible.
 
-If you have ever used a social Web3 protocol, you know the pain. Every single "Support" click requires a MetaMask popup, a gas confirmation, and a waiting period. On a live feed where you might want to interact with dozens of claims, this kills the experience entirely.
+### Core Concepts
 
-### Intuition
+* **Externally Owned Account (EOA)**: The foundational layer of user identity. This is the standard wallet address managed directly by browser extensions like MetaMask. In traditional web3 applications, an EOA must sign every individual transaction directly on-chain, limiting automation and forcing users to approve every gas fee manually.
 
-Intuition is an onchain knowledge graph protocol. Every statement on it is a **Triple**: a Subject, Predicate, and Object - all stored as Atoms on the Intuition Ledger. When you Support or Oppose a claim, you are depositing native TRUST tokens into a **MultiVault** associated with that Triple's term.
+* **ERC-7702 (Hybrid Smart Accounts / HSA)**: A protocol upgrade introducing code execution capabilities directly to the user's existing EOA. An HSA upgrades the user's EOA into a smart account deterministically, giving it programmable account capabilities without forcing the user to transfer funds to a new address or deploy an entirely separate smart contract wallet. Because the HSA address matches the user's EOA address, all assets and identities remain unified.
 
-### ERC-7702: Hybrid Smart Accounts
+* **ERC-7710 (Delegation Framework)**: A standardized protocol for creating, signing, and redeeming execution authority off-chain. Instead of giving a third party full access to a wallet, ERC-7710 allows the user to sign an off-chain EIP-712 payload that grants another address, known as the delegatee, permission to execute specific actions on their behalf.
 
-Historically, to get programmable account behavior (like session keys), users had to migrate to a dedicated Smart Contract Wallet and move all their funds. ERC-7702 eliminates this. It allows a standard MetaMask wallet (an EOA, or Externally Owned Account) to temporarily behave like a Smart Account - a **Hybrid Smart Account (HSA)** - without changing your address or moving your funds.
+* **Caveat Enforcers**: Smart contracts that enforce strict cryptographic constraints on the delegated payload. In the context of Intuition, caveats ensure that the delegatee can only call the MultiVault contract, can only execute the deposit function, can only spend up to a pre-defined TRUST budget, and can only execute a limited number of calls before the session key expires.
 
-The HSA address is derived deterministically from your wallet address. This means you always get the same HSA address across devices and sessions, and any TRUST tokens sent to it are permanently yours.
+* **Backend Relayer**: A secure application server holding an Admin Wallet private key. When a user clicks Support or Oppose on the claim feed, the frontend forwards the signed delegation payload to the relayer. The relayer then broadcasts the transaction to the blockchain, paying the gas fees so the user experiences zero transaction popups.
 
-### ERC-7710: The Delegation Framework
+* **DelegationManager Contract**: The central verification engine on Intuition. It receives the delegation payload from the relayer, verifies the user's signature, passes the transaction parameters through every attached Caveat Enforcer, and only forwards the call to the destination contract if every rule condition passes.
 
-Once a user has an HSA, they can use **ERC-7710** to grant authority to another wallet. In our app, the user grants authority to our backend **Admin Wallet**.
+* **Intuition MultiVault Contract**: The core smart contract protocol that manages Atoms, Triples, and bonding curve vaults on Intuition. When the DelegationManager validates a delegated execution, it calls deposit on the MultiVault, crediting the resulting vault shares directly to the user's address.
 
-But here is the critical part: the delegation is not a blank check. The user attaches **Caveat Enforcers** to it - these are strict, cryptographically enforced constraints that say exactly what the Admin Wallet is and is not allowed to do. For our app, we attach:
+To see how these concepts connect during setup and execution, let's explore the delegation flow and the user flow.
 
-* **AllowedTargets** - The Admin can only interact with the Intuition MultiVault contract
-* **AllowedMethods** - The Admin can only call the `deposit` function (not withdraw, not transfer)
-* **NativeTokenTransferAmount** - The Admin can only spend up to a user-defined TRUST budget
-* **LimitedCalls** - The delegation expires after 100 uses
-* **Timestamp** - The delegation expires after 30 days
+### Delegation Flow
 
-The user signs this delegation once. After that, clicking Support or Oppose hits our backend API, which executes the stake on their behalf with no further popups.
+Here is how delegation permissions are derived, funded, signed, and stored:
+
+* **HSA Address Derivation**: The application derives the user's deterministic Hybrid Smart Account address directly from their connected MetaMask wallet.
+
+* **HSA Funding**: The user transfers their chosen budget (for example, 5 TRUST) into their HSA address. This balance acts as their 1-Click gas tank.
+
+* **User Signs Delegation**: The user signs an off-chain EIP-712 delegation message where:
+  * **from**: The user's HSA address
+  * **to**: Our Admin Wallet address (`ADMIN_DELEGATEE`)
+  * **caveats**: Restricted strictly to calling `deposit()` on the Intuition MultiVault up to the user-defined TRUST budget.
+
+* **Off-Chain Storage**: The signed delegation payload is saved in local storage without incurring any transaction gas fees for the user.
+
+![Delegation Flow Diagram](./assets/delegation_flow.webp)
+
+
+### User Flow
+
+Once delegation is configured, here is how user interactions, relayer dispatch, and on-chain settlement execute seamlessly:
+
+* **User Interaction**: The user clicks Support or Oppose on the claim feed with zero MetaMask popups.
+
+* **Relayer Dispatch**: The frontend forwards the saved delegation payload to our backend `/api/stake` route.
+
+* **Admin Wallet Execution**: Our backend uses our Admin Wallet private key to submit `DelegationManager.redeemDelegations()` on-chain, covering the transaction gas fee on behalf of the user.
+
+* **Caveat Verification and Settlement**: The DelegationManager contract verifies the user's cryptographic signature, enforces all attached caveats, and executes the deposit on the MultiVault contract, crediting vault shares directly to the user's account.
+
+![User Flow Diagram](./assets/user_flow.png)
 
 ---
 

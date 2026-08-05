@@ -6,12 +6,9 @@ This repository serves as the official open-source demo application and educatio
 
 ---
 
-## Documentation & Guides
+## Master Tutorial Guide
 
-| Guide | Description |
-| :--- | :--- |
-| **[GET_STARTED.md](./GET_STARTED.md)** | **High-Level Overview & Diagrams**: What ERC-7710/7702 are, System Architecture, User Lifecycle Flow, and Data/Authority Flow diagrams. |
-| **[TUTORIAL.md](./TUTORIAL.md)** | **Step-by-Step Developer Code Tutorial**: Full code walkthrough building this DApp from scratch. |
+👉 **[Read the Full Tutorial (TUTORIAL.md)](./TUTORIAL.md)**: Includes high-level concepts, system architecture, delegation flow diagrams, and a step-by-step developer code walkthrough for building this DApp from scratch.
 
 ---
 
