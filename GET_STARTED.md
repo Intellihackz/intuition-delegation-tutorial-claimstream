@@ -6,7 +6,7 @@ Welcome to the **Intuition Delegation Framework Guide**. This document provides 
 
 ## 1. What is Delegated Execution?
 
-In standard Web3 applications, every single on-chain action requires the user to manually confirm a MetaMask popup and pay gas fees. For high-frequency social protocols like **Intuition**—where users constantly interact with knowledge graphs by creating claims, supporting statements, or opposing triples—this constant friction causes severe user drop-off.
+In standard Web3 applications, every single on-chain action requires the user to manually confirm a MetaMask popup and pay gas fees. For high-frequency social protocols like **Intuition** - where users constantly interact with knowledge graphs by creating claims, supporting statements, or opposing triples - this constant friction causes severe user drop-off.
 
 **Delegated Execution** solves this by letting users delegate specific, restricted permissions to an automated agent or backend relayer.
 
