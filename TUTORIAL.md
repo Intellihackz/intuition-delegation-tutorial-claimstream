@@ -1142,7 +1142,7 @@ const handleSupport = async () => {
     }
 
     // Optimistic UI update - show the stake immediately before the indexer catches up
-    setOptimisticSupport(BigInt(claim.term?.vaults?.[0]?.total_shares || '0') + parseEther('0.001'));
+    setOptimisticSupport(BigInt(claim.term?.vaults?.[0]?.total_shares || '0') + parseEther('0.01'));
     setTimeout(async () => {
       await refetch();
       setOptimisticSupport(null);
@@ -1197,7 +1197,7 @@ const handleOppose = async () => {
     }
 
     // Optimistic UI update
-    setOptimisticOppose(BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0') + parseEther('0.001'));
+    setOptimisticOppose(BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0') + parseEther('0.01'));
     setTimeout(async () => {
       await refetch();
       setOptimisticOppose(null);

@@ -87,7 +87,7 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
             delegation: currentDelegation,
             termId: claim.counter_term_id,
             curveId: curveId.toString(),
-            assets: parseEther("0.001").toString(),
+            assets: parseEther("0.01").toString(),
             userAddress: address
           }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value)
         });
@@ -102,13 +102,13 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
           { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient },
           {
             args: [address, claim.counter_term_id, curveId, BigInt(0)],
-            value: parseEther("0.001"), // 0.001 tTRUST (min deposit)
+            value: parseEther("0.01"), // 0.01 tTRUST (min deposit)
           }
         );
       }
 
       const currentShares = BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
-      setOptimisticOppose(currentShares + parseEther("0.001")); // Optimistically add 0.001 shares
+      setOptimisticOppose(currentShares + parseEther("0.01")); // Optimistically add 0.01 shares (matches actual stake)
       setTimeout(async () => {
         await refetch();
         setOptimisticOppose(null);
