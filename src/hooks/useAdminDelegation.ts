@@ -12,8 +12,11 @@ import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, crea
 import { MULTIVAULT, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
-// The address derived from our ADMIN_PRIVATE_KEY
-export const ADMIN_DELEGATEE: Address = '0x9c103d804bc1867F429a37707Dc5d5C9b29D7a6C';
+// The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
+// NEXT_PUBLIC_ADMIN_ADDRESS if you use your own admin wallet, or delegations
+// will be signed for a relayer that can't redeem them.
+export const ADMIN_DELEGATEE: Address =
+  (process.env.NEXT_PUBLIC_ADMIN_ADDRESS as Address) || '0x9c103d804bc1867F429a37707Dc5d5C9b29D7a6C';
 const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
 const getBudgetStorageKey = (addr: string) => `intuition_admin_budget_${addr.toLowerCase()}`;
 

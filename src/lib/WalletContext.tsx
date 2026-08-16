@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { createWalletClient, custom, createPublicClient, http, WalletClient, PublicClient, Address, defineChain } from 'viem';
+import { createWalletClient, custom, createPublicClient, http, WalletClient, PublicClient, Address } from 'viem';
 
 import { intuitionMainnet } from './chains';
 

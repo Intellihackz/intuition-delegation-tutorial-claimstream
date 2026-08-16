@@ -59,7 +59,7 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
       }
       
       const currentShares = BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
-      setOptimisticSupport(currentShares + parseEther("0.001")); // Optimistically add 0.001 shares
+      setOptimisticSupport(currentShares + parseEther("0.01")); // Optimistically add 0.01 shares (matches actual stake)
       setTimeout(async () => {
         await refetch();
         setOptimisticSupport(null);

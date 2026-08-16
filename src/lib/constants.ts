@@ -1,5 +1,7 @@
-export const MULTIVAULT = '0x6E35cF57A41fA15eA0EaE9C33e751b01A784Fe7e';
-export const DELEGATION_MANAGER = '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3';
+import { type Address } from 'viem';
+
+export const MULTIVAULT: Address = '0x6E35cF57A41fA15eA0EaE9C33e751b01A784Fe7e';
+export const DELEGATION_MANAGER: Address = '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3';
 export const DEPOSIT_SIG = 'deposit(address,bytes32,uint256,uint256)';
 export const DEPOSIT_OFFSET = { receiver: 4, termId: 36, curveId: 68, minShares: 100 } as const;
 export const ApprovalType = { NONE: 0, DEPOSIT: 1, REDEMPTION: 2, BOTH: 3 } as const;

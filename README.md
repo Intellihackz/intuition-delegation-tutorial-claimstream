@@ -54,6 +54,10 @@ Create `.env.local`:
 ```env
 # Admin wallet private key (used to pay gas for 1-click staking relay)
 ADMIN_PRIVATE_KEY=0xYourPrivateKeyHere
+
+# Public address derived from ADMIN_PRIVATE_KEY above — must match, or
+# delegations will be signed for a relayer that can't redeem them
+NEXT_PUBLIC_ADMIN_ADDRESS=0xYourPublicAddressHere
 ```
 
 ### 3. Start Development Server

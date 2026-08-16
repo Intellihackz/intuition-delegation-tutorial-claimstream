@@ -80,7 +80,7 @@ export function UpgradeAccount() {
       )}
 
       {error && (
-        <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded wrap-break-word">
+        <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded break-words">
           Error: {error}
         </div>
       )}
