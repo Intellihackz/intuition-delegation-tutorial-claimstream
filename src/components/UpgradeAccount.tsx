@@ -16,9 +16,9 @@ export function UpgradeAccount() {
     <div className="mb-8 p-6 bg-white/5 border border-white/10 rounded-lg">
       <div className="flex justify-between items-center flex-wrap gap-4">
         <div>
-          <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">1-Click Staking</h3>
+          <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
           <p className="text-sm text-white/60 mb-1">
-            Deploy your Hybrid Smart Account and delegate to our secure Admin Wallet to enable seamless 1-click staking.
+            Deploy your Hybrid Smart Account and delegate to our secure Admin Wallet to enable seamless delegated staking.
           </p>
           <p className="text-xs text-white/40">
             Admin Delegatee: {ADMIN_DELEGATEE.slice(0, 6)}...{ADMIN_DELEGATEE.slice(-4)}
@@ -32,7 +32,7 @@ export function UpgradeAccount() {
               disabled={isDeploying}
               className="px-4 py-2 border border-red-500/50 text-red-400 font-bold uppercase tracking-wider text-sm hover:bg-red-500/10 disabled:opacity-50 transition-colors rounded"
             >
-              {isDeploying ? 'Revoking...' : 'Disable 1-Click (On-Chain)'}
+              {isDeploying ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
             </button>
           ) : (
             <div className="flex gap-2 items-center">
@@ -51,7 +51,7 @@ export function UpgradeAccount() {
                 disabled={isDeploying || !smartAccount || Number(budget) <= 0}
                 className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
               >
-                {isDeploying ? 'Setting up...' : 'Enable 1-Click Staking'}
+                {isDeploying ? 'Setting up...' : 'Enable Delegated Staking'}
               </button>
             </div>
           )}
@@ -60,7 +60,7 @@ export function UpgradeAccount() {
       
       {delegation && (
         <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded">
-          <div className="mb-2 font-bold">Successfully configured! Your 1-Click Staking is active.</div>
+          <div className="mb-2 font-bold">Successfully configured! Your Delegated Staking is active.</div>
           
           {hsaBalance !== null && Number(initialBudget) > 0 && (
             <div className="mt-4">

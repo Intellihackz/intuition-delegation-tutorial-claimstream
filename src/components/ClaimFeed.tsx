@@ -30,7 +30,7 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
       const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
 
       if (currentDelegation) {
-        // 1-Click Staking (Relayer Path)
+        // Delegated Staking (Relayer Path)
         const res = await fetch('/api/stake', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -79,7 +79,7 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
       const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
 
       if (currentDelegation) {
-        // 1-Click Staking (Relayer Path)
+        // Delegated Staking (Relayer Path)
         const res = await fetch('/api/stake', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

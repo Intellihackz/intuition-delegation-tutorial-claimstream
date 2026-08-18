@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
     const hash = await walletClient.sendTransaction({ to: target, data });
     
     // We can choose to wait for the receipt, or return the hash immediately so the UI feels instant.
-    // Returning immediately for maximum "1-Click" speed.
+    // Returning immediately so the delegated stake feels instant.
     return NextResponse.json({ success: true, hash });
 
   } catch (error: any) {

@@ -36,11 +36,11 @@ Here is exactly what our Claim Feed will do by the end of this tutorial:
 ### Frontend Features
 
 * **Intuition Network Connection** - Connect MetaMask and automatically switch to the Intuition Mainnet
-* **1-Click Upgrade Panel** - Let users deploy a Hybrid Smart Account and sign a scoped delegation in one flow
-* **HSA Budget Progress Bar** - A live display showing how much 1-Click budget the user has remaining
+* **Delegated Staking Setup Panel** - Let users deploy a Hybrid Smart Account and sign a scoped delegation in one flow
+* **HSA Budget Progress Bar** - A live display showing how much delegated budget the user has remaining
 * **Claim Publishing Form** - A form where users can write statements that get published to the Intuition Ledger
 * **Infinite Scroll Feed** - A live, paginated feed of all claims on the protocol, with Support and Oppose buttons
-* **Delegation Revocation** - Let users revoke their 1-Click permissions at any time
+* **Delegation Revocation** - Let users revoke their delegated staking permissions at any time
 
 ### Backend Features
 
@@ -78,7 +78,7 @@ Here is how delegation permissions are derived, funded, signed, and stored:
 
 * **HSA Address Derivation**: The application derives the user's deterministic Hybrid Smart Account address directly from their connected MetaMask wallet.
 
-* **HSA Funding**: The user transfers their chosen budget (for example, 5 TRUST) into their HSA address. This balance acts as their 1-Click gas tank.
+* **HSA Funding**: The user transfers their chosen budget (for example, 5 TRUST) into their HSA address. This balance acts as their delegated staking gas tank.
 
 * **User Signs Delegation**: The user signs an off-chain EIP-712 delegation message where:
   * **from**: The user's HSA address
@@ -368,20 +368,20 @@ export function ConnectButton() {
 
 This is the core of the tutorial. We will build both the UI and the delegation logic together.
 
-Before writing code, let's understand what happens under the hood when a user clicks "Enable 1-Click Staking":
+Before writing code, let's understand what happens under the hood when a user clicks "Enable Delegated Staking":
 
 1. **Initialize the HSA** - We calculate the user's deterministic Hybrid Smart Account address from their wallet address. The HSA does not need to be deployed yet.
 2. **Deploy the HSA** - If it hasn't been deployed on-chain before, we deploy it. This is a one-time step.
-3. **Fund the HSA** - We transfer the user's chosen TRUST budget from their main wallet to the HSA. This becomes the "gas tank" for all future 1-Click actions.
+3. **Fund the HSA** - We transfer the user's chosen TRUST budget from their main wallet to the HSA. This becomes the "gas tank" for all future delegated actions.
 4. **Approve the MultiVault** - We grant the MultiVault permission to move funds from the HSA's behalf.
 5. **Create and Sign the Delegation** - We build the scoped delegation object with all its Caveat Enforcers and ask the user to sign it with MetaMask.
-6. **Save the Delegation** - We save the signed delegation to `localStorage` so the feed can use it for future 1-Click actions without asking the user to sign again.
+6. **Save the Delegation** - We save the signed delegation to `localStorage` so the feed can use it for future delegated actions without asking the user to sign again.
 
 ### The Upgrade Account UI
 
 Create `src/components/UpgradeAccount.tsx`. This component renders:
 
-* An "Enable 1-Click Staking" flow with a budget input when no delegation exists
+* An "Enable Delegated Staking" flow with a budget input when no delegation exists
 * A live budget progress bar and a "Disable" button when a delegation is active
 
 ```tsx
@@ -404,9 +404,9 @@ export function UpgradeAccount() {
     <div className="mb-8 p-6 bg-white/5 border border-white/10 rounded-lg">
       <div className="flex justify-between items-center flex-wrap gap-4">
         <div>
-          <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">1-Click Staking</h3>
+          <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
           <p className="text-sm text-white/60 mb-1">
-            Deploy your Hybrid Smart Account and delegate to our secure Admin Wallet to enable seamless 1-click staking.
+            Deploy your Hybrid Smart Account and delegate to our secure Admin Wallet to enable seamless delegated staking.
           </p>
           <p className="text-xs text-white/40">
             Admin Delegatee: {ADMIN_DELEGATEE.slice(0, 6)}...{ADMIN_DELEGATEE.slice(-4)}
@@ -420,7 +420,7 @@ export function UpgradeAccount() {
               disabled={isDeploying}
               className="px-4 py-2 border border-red-500/50 text-red-400 font-bold uppercase tracking-wider text-sm hover:bg-red-500/10 disabled:opacity-50 transition-colors rounded"
             >
-              {isDeploying ? 'Revoking...' : 'Disable 1-Click (On-Chain)'}
+              {isDeploying ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
             </button>
           ) : (
             <div className="flex gap-2 items-center">
@@ -439,7 +439,7 @@ export function UpgradeAccount() {
                 disabled={isDeploying || !smartAccount || Number(budget) <= 0}
                 className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
               >
-                {isDeploying ? 'Setting up...' : 'Enable 1-Click Staking'}
+                {isDeploying ? 'Setting up...' : 'Enable Delegated Staking'}
               </button>
             </div>
           )}
@@ -448,7 +448,7 @@ export function UpgradeAccount() {
 
       {delegation && (
         <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded">
-          <div className="mb-2 font-bold">Successfully configured! Your 1-Click Staking is active.</div>
+          <div className="mb-2 font-bold">Successfully configured! Your Delegated Staking is active.</div>
 
           {hsaBalance !== null && Number(initialBudget) > 0 && (
             <div className="mt-4">
@@ -485,6 +485,12 @@ Now create `src/hooks/useAdminDelegation.ts`. This is where all the logic behind
 
 When we attach the `AllowedMethods` caveat, the blockchain requires the exact 4-byte EVM function selector - not a human-readable string. The selector for `deposit(address,bytes32,uint256,uint256)` is `0xcef6d209`. If you pass the raw string instead, the Delegation Manager will silently reject the execution. We use `viem`'s `toFunctionSelector` to generate this correctly.
 
+**Why does revoke also sweep the HSA's balance?**
+
+Revoking only needs to flip the MultiVault approval to `NONE` -- but that leaves behind whatever unspent TRUST is still sitting in the HSA, with no easy way to get it back. The HSA's own `execute()` function only accepts calls from the ERC-4337 `EntryPoint` or the contract itself, so the owner's EOA can't just call it directly to move funds out; the "normal" way would be submitting a UserOperation through a bundler, which this app doesn't have wired up.
+
+Instead, we reuse the exact same mechanism the relayer already uses for staking: the owner signs a one-time delegation from the HSA to **themselves**, scoped to the full remaining balance, and immediately redeems it with their own wallet (paying their own gas, since this is a rare, user-initiated action). No bundler, no new infrastructure -- just `createDelegation` + `signDelegation` + `DelegationManager.redeemDelegations()`, the same three calls used everywhere else in this hook.
+
 <details>
 <summary>View <code>src/hooks/useAdminDelegation.ts</code></summary>
 
@@ -496,12 +502,15 @@ import {
   Implementation,
   toMetaMaskSmartAccount,
   createDelegation,
+  createExecution,
+  ExecutionMode,
   ScopeType,
   CaveatType,
   MetaMaskSmartAccount
 } from '@metamask/smart-accounts-kit';
+import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 export const ADMIN_DELEGATEE: Address = '0xYourAdminWalletPublicAddress';
@@ -693,6 +702,36 @@ export function useAdminDelegation() {
       setIsDeploying(true);
       setError(null);
       await ensureChain();
+
+      // Sweep any remaining HSA balance back to the EOA first -- see "Why
+      // does revoke also sweep the HSA's balance?" above.
+      const remainingBalance = await publicClient.getBalance({ address: smartAccount.address });
+      if (remainingBalance > BigInt(0)) {
+        console.log(`Sweeping ${remainingBalance} wei back to EOA...`);
+        const sweepDelegation = createDelegation({
+          from: smartAccount.address,
+          to: address,
+          environment: smartAccount.environment,
+          scope: {
+            type: ScopeType.NativeTokenTransferAmount,
+            maxAmount: remainingBalance,
+          },
+          caveats: [],
+        });
+        const sweepSignature = await smartAccount.signDelegation({ delegation: sweepDelegation });
+        const signedSweep = { ...sweepDelegation, signature: sweepSignature };
+
+        const sweepHash = await walletClient.sendTransaction({
+          account: address,
+          to: DELEGATION_MANAGER,
+          data: DelegationManager.encode.redeemDelegations({
+            delegations: [[signedSweep]],
+            modes: [ExecutionMode.SingleDefault],
+            executions: [[createExecution({ target: address, value: remainingBalance })]],
+          }),
+        });
+        await publicClient.waitForTransactionReceipt({ hash: sweepHash });
+      }
 
       // Revoking means removing the MultiVault's approval from the HSA
       console.log('Revoking MultiVault approval...');
@@ -1112,7 +1151,7 @@ const handleSupport = async () => {
     const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
 
     if (currentDelegation) {
-      // 1-Click path: route through the backend relayer
+      // Delegated path: route through the backend relayer
       const res = await fetch('/api/stake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1167,7 +1206,7 @@ const handleOppose = async () => {
     const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
 
     if (currentDelegation) {
-      // 1-Click path: route through the backend relayer
+      // Delegated path: route through the backend relayer
       const res = await fetch('/api/stake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

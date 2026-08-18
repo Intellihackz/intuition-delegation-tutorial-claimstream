@@ -4,12 +4,15 @@ import {
   Implementation,
   toMetaMaskSmartAccount,
   createDelegation,
+  createExecution,
+  ExecutionMode,
   ScopeType,
   CaveatType,
   MetaMaskSmartAccount
 } from '@metamask/smart-accounts-kit';
+import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 // The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
@@ -232,6 +235,41 @@ export function useAdminDelegation() {
       setIsDeploying(true);
       setError(null);
       await ensureChain();
+
+      // Sweep any remaining HSA balance back to the EOA first. The HSA's own
+      // execute() only accepts calls from the ERC-4337 EntryPoint or itself,
+      // so the owner can't just call it directly to move funds out. Instead
+      // we sign a one-time self-delegation for the full balance and redeem
+      // it ourselves -- the exact same delegation mechanism the relayer uses
+      // for staking, just invoked directly by the owner instead.
+      const remainingBalance = await publicClient.getBalance({ address: smartAccount.address });
+      if (remainingBalance > BigInt(0)) {
+        console.log(`Sweeping ${remainingBalance} wei back to EOA...`);
+        const sweepDelegation = createDelegation({
+          from: smartAccount.address,
+          to: address,
+          environment: smartAccount.environment,
+          scope: {
+            type: ScopeType.NativeTokenTransferAmount,
+            maxAmount: remainingBalance,
+          },
+          caveats: [],
+        });
+        const sweepSignature = await smartAccount.signDelegation({ delegation: sweepDelegation });
+        const signedSweep = { ...sweepDelegation, signature: sweepSignature };
+
+        const sweepHash = await walletClient.sendTransaction({
+          account: address,
+          to: DELEGATION_MANAGER,
+          data: DelegationManager.encode.redeemDelegations({
+            delegations: [[signedSweep]],
+            modes: [ExecutionMode.SingleDefault],
+            executions: [[createExecution({ target: address, value: remainingBalance })]],
+          }),
+          chain: intuitionMainnet,
+        });
+        await publicClient.waitForTransactionReceipt({ hash: sweepHash });
+      }
 
       console.log('Revoking MultiVault approval...');
       const hash = await walletClient.sendTransaction({

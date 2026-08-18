@@ -27,7 +27,7 @@ Through this project, developers learn how to:
 
 - **Intuition Claim Feed**: Paginated, infinite scroll feed of claims (triples) powered by `@0xintuition/graphql`.
 - **Claim Creation**: Form to publish Subjects, Predicates, and Objects (Atoms) and link them into Triples using `@0xintuition/sdk`.
-- **1-Click Staking**: Support or Oppose claims instantly without transaction popups via backend delegated execution.
+- **Delegated Staking**: Support or Oppose claims instantly without transaction popups via backend delegated execution.
 - **HSA Budget Dashboard**: Live balance indicator for the user's Hybrid Smart Account.
 
 ---
@@ -52,7 +52,7 @@ npm install
 ### 2. Configure Environment Variables
 Create `.env.local`:
 ```env
-# Admin wallet private key (used to pay gas for 1-click staking relay)
+# Admin wallet private key (used to pay gas for delegated staking relay)
 ADMIN_PRIVATE_KEY=0xYourPrivateKeyHere
 
 # Public address derived from ADMIN_PRIVATE_KEY above — must match, or
