@@ -6,6 +6,11 @@ export const DEPOSIT_SIG = 'deposit(address,bytes32,uint256,uint256)';
 export const DEPOSIT_OFFSET = { receiver: 4, termId: 36, curveId: 68, minShares: 100 } as const;
 export const ApprovalType = { NONE: 0, DEPOSIT: 1, REDEMPTION: 2, BOTH: 3 } as const;
 
+// The rolling window the delegated staking budget is capped over. The
+// NativeTokenPeriodTransfer caveat lets the relayer spend up to the chosen
+// amount per window, then resets automatically on the next window.
+export const BUDGET_PERIOD_SECONDS = 86_400; // 1 day
+
 export const multiVaultAbi = [
   {
     type: 'function',

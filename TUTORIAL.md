@@ -36,7 +36,7 @@ Here is exactly what our Claim Feed will do by the end of this tutorial:
 
 * **Intuition Network Connection** - Connect MetaMask and automatically switch to the Intuition Mainnet
 * **Delegated Staking Setup Panel** - Let users deploy a Hybrid Smart Account and sign a scoped delegation in one flow
-* **HSA Budget Progress Bar** - A live display showing how much delegated budget the user has remaining
+* **Daily Allowance Meter** - A live display of how much of today's delegated spend cap is left and when it resets, plus the HSA balance and a block-explorer link
 * **Infinite Scroll Feed** - A live, paginated feed of all claims on the protocol, with Support and Oppose buttons
 * **Delegation Revocation** - Let users revoke their delegated staking permissions at any time
 
@@ -54,19 +54,19 @@ To understand how this architecture operates, it is helpful to explore the core 
 
 ### Core Concepts
 
-* **Externally Owned Account (EOA)**: The foundational layer of user identity. This is the standard wallet address managed directly by browser extensions like MetaMask. In traditional web3 applications, an EOA must sign every individual transaction directly on-chain, limiting automation and forcing users to approve every gas fee manually.
+* **[Externally Owned Account (EOA)](https://ethereum.org/en/developers/docs/accounts/)**: The foundational layer of user identity. This is the standard wallet address managed directly by browser extensions like MetaMask. In traditional web3 applications, an EOA must sign every individual transaction directly on-chain, limiting automation and forcing users to approve every gas fee manually.
 
-* **ERC-7702 (Hybrid Smart Accounts / HSA)**: A protocol upgrade introducing code execution capabilities directly to the user's existing EOA. An HSA upgrades the user's EOA into a smart account deterministically, giving it programmable account capabilities without forcing the user to transfer funds to a new address or deploy an entirely separate smart contract wallet. Because the HSA address matches the user's EOA address, all assets and identities remain unified.
+* **[ERC-7702](https://eips.ethereum.org/EIPS/eip-7702) (Hybrid Smart Accounts / HSA)**: A protocol upgrade introducing code execution capabilities directly to the user's existing EOA. An HSA upgrades the user's EOA into a smart account deterministically, giving it programmable account capabilities without forcing the user to transfer funds to a new address or deploy an entirely separate smart contract wallet. Because the HSA address matches the user's EOA address, all assets and identities remain unified.
 
-* **ERC-7710 (Delegation Framework)**: A standardized protocol for creating, signing, and redeeming execution authority off-chain. Instead of giving a third party full access to a wallet, ERC-7710 allows the user to sign an off-chain EIP-712 payload that grants another address, known as the delegatee, permission to execute specific actions on their behalf.
+* **[ERC-7710](https://eips.ethereum.org/EIPS/eip-7710) (Delegation Framework)**: A standardized protocol for creating, signing, and redeeming execution authority off-chain. Instead of giving a third party full access to a wallet, ERC-7710 allows the user to sign an off-chain EIP-712 payload that grants another address, known as the delegatee, permission to execute specific actions on their behalf.
 
-* **Caveat Enforcers**: Smart contracts that enforce strict cryptographic constraints on the delegated payload. In the context of Intuition, caveats ensure that the delegatee can only call the MultiVault contract, can only execute the deposit function, can only spend up to a pre-defined TRUST budget, and can only execute a limited number of calls before the session key expires.
+* **[Caveat Enforcers](https://docs.metamask.io/smart-accounts-kit/concepts/delegation/caveat-enforcers/)**: Smart contracts that enforce strict cryptographic constraints on the delegated payload. In the context of Intuition, caveats ensure that the delegatee can only call the MultiVault contract, can only execute the deposit function, can only spend up to a per-day TRUST cap that refills automatically, and can only execute a limited number of calls before the session key expires.
 
 * **Backend Relayer**: A secure application server holding an Admin Wallet private key. When a user clicks Support or Oppose on the claim feed, the frontend forwards the signed delegation payload to the relayer. The relayer then broadcasts the transaction to the blockchain, paying the gas fees so the user experiences zero transaction popups.
 
-* **DelegationManager Contract**: The central verification engine on Intuition. It receives the delegation payload from the relayer, verifies the user's signature, passes the transaction parameters through every attached Caveat Enforcer, and only forwards the call to the destination contract if every rule condition passes.
+* **[DelegationManager Contract](https://docs.metamask.io/smart-accounts-kit/concepts/delegation/delegation-manager/)**: The central verification engine on Intuition. It receives the delegation payload from the relayer, verifies the user's signature, passes the transaction parameters through every attached Caveat Enforcer, and only forwards the call to the destination contract if every rule condition passes.
 
-* **Intuition MultiVault Contract**: The core smart contract protocol that manages Atoms, Triples, and bonding curve vaults on Intuition. When the DelegationManager validates a delegated execution, it calls deposit on the MultiVault, crediting the resulting vault shares directly to the user's address.
+* **[Intuition MultiVault Contract](https://www.docs.intuition.systems/docs/intuition-smart-contracts/multivault)**: The core smart contract protocol that manages Atoms, Triples, and bonding curve vaults on Intuition. When the DelegationManager validates a delegated execution, it calls deposit on the MultiVault, crediting the resulting vault shares directly to the user's address.
 
 To see how these concepts connect during setup and execution, let's explore the delegation flow and the user flow.
 
@@ -76,12 +76,12 @@ Here is how delegation permissions are derived, funded, signed, and stored:
 
 * **HSA Address Derivation**: The application derives the user's deterministic Hybrid Smart Account address directly from their connected MetaMask wallet.
 
-* **HSA Funding**: The user transfers their chosen budget (for example, 5 TRUST) into their HSA address. This balance acts as their delegated staking gas tank.
+* **HSA Funding**: The user transfers TRUST into their HSA address (for example, 5 TRUST). This balance acts as their delegated staking gas tank; the per-day cap below controls how fast it can be spent.
 
 * **User Signs Delegation**: The user signs an off-chain EIP-712 delegation message where:
   * **from**: The user's HSA address
   * **to**: Our Admin Wallet address (`ADMIN_DELEGATEE`)
-  * **caveats**: Restricted strictly to calling `deposit()` on the Intuition MultiVault up to the user-defined TRUST budget.
+  * **caveats**: Restricted strictly to calling `deposit()` on the Intuition MultiVault, up to a user-defined TRUST cap **per rolling 24h window** that resets automatically.
 
 * **Off-Chain Storage**: The signed delegation payload is saved in local storage without incurring any transaction gas fees for the user.
 
@@ -152,7 +152,14 @@ export const DEPOSIT_SIG = 'deposit(address,bytes32,uint256,uint256)';
 export const DEPOSIT_OFFSET = {
   receiver: 4,   // First argument after the 4-byte function selector
 };
+
+// The rolling window the delegated staking cap is measured over. The
+// NativeTokenPeriodTransfer caveat lets the relayer spend up to the chosen
+// amount per window, then refills automatically on the next one.
+export const BUDGET_PERIOD_SECONDS = 86_400; // 1 day
 ```
+
+> The real `src/lib/constants.ts` in the repo also exports `multiVaultAbi` and an `ApprovalType` map used by the hook below - grab it from the repo so the imports resolve.
 
 ---
 
@@ -370,33 +377,78 @@ Before writing code, let's understand what happens under the hood when a user cl
 
 1. **Initialize the HSA** - We calculate the user's deterministic Hybrid Smart Account address from their wallet address. The HSA does not need to be deployed yet.
 2. **Deploy the HSA** - If it hasn't been deployed on-chain before, we deploy it. This is a one-time step.
-3. **Fund the HSA** - We transfer the user's chosen TRUST budget from their main wallet to the HSA. This becomes the "gas tank" for all future delegated actions.
-4. **Approve the MultiVault** - We grant the MultiVault permission to move funds from the HSA's behalf.
-5. **Create and Sign the Delegation** - We build the scoped delegation object with all its Caveat Enforcers and ask the user to sign it with MetaMask.
+3. **Fund the HSA** - We transfer TRUST from the user's main wallet to the HSA. This is the total staking balance; the per-day cap in the delegation limits how fast the relayer can draw it down. The user can top up the HSA address anytime to extend the runway.
+4. **Approve the MultiVault** - The user's EOA calls `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This authorizes the HSA to submit `deposit(receiver = EOA, ...)` calls so the resulting vault shares are credited to the user's own address. The MultiVault rejects deposits where `receiver != sender` without this approval - it never moves the HSA's funds itself; the HSA sends the deposit and the MultiVault just allows the EOA as the beneficiary.
+5. **Create and Sign the Delegation** - We build the scoped delegation object with all its Caveat Enforcers - including a per-day spend cap - and ask the user to sign it with MetaMask.
 6. **Save the Delegation** - We save the signed delegation to `localStorage` so the feed can use it for future delegated actions without asking the user to sign again.
 
 ### The Upgrade Account UI
 
 Create `src/components/UpgradeAccount.tsx`. This component renders:
 
-* An "Enable Delegated Staking" flow with a budget input when no delegation exists
-* A live budget progress bar and a "Disable" button when a delegation is active
+* An "Enable Delegated Staking" flow with a **daily limit** and **fund HSA** input when no delegation exists
+* When a delegation is active: the full HSA address (with copy and block-explorer links), the live HSA balance, a "resets in..." daily-allowance meter, and a "Disable" button
 
 ```tsx
 // src/components/UpgradeAccount.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useWallet } from '@/lib/WalletContext';
 import { useAdminDelegation, ADMIN_DELEGATEE } from '@/hooks/useAdminDelegation';
-import { formatEther } from 'viem';
+import { intuitionMainnet } from '@/lib/chains';
+import { formatEther, parseEther } from 'viem';
+
+function formatCountdown(secondsLeft: number): string {
+  if (secondsLeft <= 0) return 'now';
+  const h = Math.floor(secondsLeft / 3600);
+  const m = Math.floor((secondsLeft % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${secondsLeft}s`;
+}
 
 export function UpgradeAccount() {
   const { address } = useWallet();
-  const { smartAccount, delegation, isDeploying, error, setupDelegation, revokeDelegation, hsaBalance, initialBudget } = useAdminDelegation();
-  const [budget, setBudget] = useState('5');
+  const {
+    smartAccount, delegation, isDeploying, error, setupDelegation, revokeDelegation,
+    hsaBalance, dailyCap, periodAvailable, periodResetsAt,
+  } = useAdminDelegation();
+  const [cap, setCap] = useState('1');
+  const [prefund, setPrefund] = useState('5');
+  const [copied, setCopied] = useState(false);
+  const [nowSec, setNowSec] = useState(0);
+
+  // Keep a current-time tick so the "resets in" countdown stays fresh.
+  useEffect(() => {
+    const update = () => setNowSec(Math.floor(Date.now() / 1000));
+    update();
+    const id = setInterval(update, 15000);
+    return () => clearInterval(id);
+  }, []);
 
   if (!address) return null;
+
+  const hsaAddress = smartAccount?.address;
+  const explorerBase = intuitionMainnet.blockExplorers?.default.url;
+
+  let capWei = BigInt(0);
+  try { capWei = parseEther(dailyCap || '0'); } catch {}
+  const availableWei = periodAvailable ?? capWei;
+  const allowancePct = capWei > BigInt(0)
+    ? Math.min(100, Math.max(0, Number((availableWei * BigInt(10000)) / capWei) / 100))
+    : 0;
+  const resetsInSeconds = periodResetsAt && nowSec ? periodResetsAt - nowSec : null;
+  const prefundTooLow = Number(prefund) > 0 && Number(cap) > 0 && Number(prefund) < Number(cap);
+
+  const copyHsa = async () => {
+    if (!hsaAddress) return;
+    try {
+      await navigator.clipboard.writeText(hsaAddress);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
 
   return (
     <div className="mb-8 p-6 bg-white/5 border border-white/10 rounded-lg">
@@ -421,20 +473,32 @@ export function UpgradeAccount() {
               {isDeploying ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
             </button>
           ) : (
-            <div className="flex gap-2 items-center">
-              <input
-                type="number"
-                value={budget}
-                onChange={(e) => setBudget(e.target.value)}
-                placeholder="Budget (TRUST)"
-                className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-32 outline-none focus:border-white/50"
-                min="0"
-                step="any"
-              />
-              <span className="text-white/60 text-xs mr-2">TRUST</span>
+            <div className="flex gap-2 items-end flex-wrap">
+              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
+                Daily limit
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="number" value={cap} onChange={(e) => setCap(e.target.value)}
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-24 outline-none focus:border-white/50"
+                    min="0" step="any"
+                  />
+                  <span className="text-white/60 text-xs">TRUST</span>
+                </div>
+              </label>
+              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
+                Fund HSA
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="number" value={prefund} onChange={(e) => setPrefund(e.target.value)}
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-24 outline-none focus:border-white/50"
+                    min="0" step="any"
+                  />
+                  <span className="text-white/60 text-xs">TRUST</span>
+                </div>
+              </label>
               <button
-                onClick={() => setupDelegation(budget, 100)}
-                disabled={isDeploying || !smartAccount || Number(budget) <= 0}
+                onClick={() => setupDelegation(cap, prefund, 100)}
+                disabled={isDeploying || !smartAccount || Number(cap) <= 0 || Number(prefund) <= 0 || prefundTooLow}
                 className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
               >
                 {isDeploying ? 'Setting up...' : 'Enable Delegated Staking'}
@@ -444,21 +508,54 @@ export function UpgradeAccount() {
         </div>
       </div>
 
+      {!delegation && (
+        <p className="mt-3 text-xs text-white/40">
+          The relayer can spend at most your <span className="text-white/60">daily limit</span> per 24h, then the
+          allowance resets automatically. <span className="text-white/60">Fund HSA</span> is the total balance moved
+          into your smart account &mdash; top it up anytime to extend the runway. Revoking sweeps the unspent balance back.
+        </p>
+      )}
+
       {delegation && (
         <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded">
-          <div className="mb-2 font-bold">Successfully configured! Your Delegated Staking is active.</div>
+          <div className="mb-3 font-bold">Successfully configured! Your Delegated Staking is active.</div>
 
-          {hsaBalance !== null && Number(initialBudget) > 0 && (
-            <div className="mt-4">
+          {hsaAddress && (
+            <div className="mb-3">
+              <div className="text-xs text-green-300/70 uppercase tracking-widest mb-1">Hybrid Smart Account</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <code className="text-xs text-green-200 break-all font-mono">{hsaAddress}</code>
+                <button onClick={copyHsa} className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10">
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                {explorerBase && (
+                  <a href={`${explorerBase}/address/${hsaAddress}`} target="_blank" rel="noopener noreferrer"
+                    className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10">
+                    Explorer &#8599;
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
+
+          {hsaBalance !== null && (
+            <div className="flex justify-between text-xs mb-3 text-green-300">
+              <span>HSA Balance</span>
+              <span>{Number(formatEther(hsaBalance)).toFixed(3)} TRUST</span>
+            </div>
+          )}
+
+          {capWei > BigInt(0) && (
+            <div>
               <div className="flex justify-between text-xs mb-1 text-green-300">
-                <span>HSA Budget Remaining</span>
-                <span>{Number(formatEther(hsaBalance)).toFixed(3)} TRUST</span>
+                <span>Daily Allowance Remaining</span>
+                <span>
+                  {Number(formatEther(availableWei)).toFixed(3)} / {Number(formatEther(capWei)).toFixed(3)} TRUST
+                  {resetsInSeconds !== null ? ` · resets in ${formatCountdown(resetsInSeconds)}` : ''}
+                </span>
               </div>
               <div className="w-full bg-black/50 h-2 rounded-full overflow-hidden">
-                <div
-                  className="bg-green-500 h-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, Math.max(0, (Number(formatEther(hsaBalance)) / Number(initialBudget)) * 100))}%` }}
-                ></div>
+                <div className="bg-green-500 h-full transition-all duration-500" style={{ width: `${allowancePct}%` }}></div>
               </div>
             </div>
           )}
@@ -478,6 +575,14 @@ export function UpgradeAccount() {
 ### The Delegation Hook
 
 Now create `src/hooks/useAdminDelegation.ts`. This is where all the logic behind the button lives. We extract it into a custom hook so the UI component above stays clean and focused on rendering.
+
+**What does approving the MultiVault actually do?**
+
+Step 3 of `setupDelegation` has the user's EOA call `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This is easy to misread as "letting the MultiVault move the HSA's money" - it is the opposite. The MultiVault tracks share ownership per address, and by default it only lets an address open or add to a position for *itself* (`receiver == msg.sender`). When the relayer redeems the delegation, the **HSA** is the account calling `deposit(...)`, but we pin the `receiver` argument to the user's **EOA** so the shares land in the user's own wallet, never the HSA. That cross-address deposit is exactly what `ApprovalType.DEPOSIT` unlocks - it tells the MultiVault "the HSA is allowed to deposit on my behalf." Revoking flips the same approval back to `ApprovalType.NONE`.
+
+**Why a daily cap instead of a lifetime budget?**
+
+The first version of this hook used a `NativeTokenTransferAmount` scope - one fixed allowance spent over the delegation's whole life. Once it ran out, the user had to sign a brand new delegation. Swapping it for `NativeTokenPeriodTransfer` gives the relayer a fresh allowance every `BUDGET_PERIOD_SECONDS` (24h here). The `NativeTokenPeriodTransferEnforcer` tracks how much has been spent in the current window on-chain and refuses anything over `periodAmount`; when the window rolls over it resets automatically, no re-signing. We read the live remaining amount with `getNativeTokenPeriodTransferEnforcerAvailableAmount` (it reverts until the first redemption, so we fall back to the full cap), and compute the reset time from the `periodStart` we stored at setup.
 
 **Why do we use `toFunctionSelector`?**
 
@@ -507,14 +612,33 @@ import {
   MetaMaskSmartAccount
 } from '@metamask/smart-accounts-kit';
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
+import { getNativeTokenPeriodTransferEnforcerAvailableAmount } from '@metamask/smart-accounts-kit/actions';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 export const ADMIN_DELEGATEE: Address = '0xYourAdminWalletPublicAddress';
 
 const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
 const getBudgetStorageKey = (addr: string) => `intuition_admin_budget_${addr.toLowerCase()}`;
+
+// Saved alongside the delegation. `dailyCap` is the TRUST the relayer may spend
+// per window; `periodStart` is the unix second the first window opened, used to
+// show when the allowance next resets.
+type BudgetMeta = { dailyCap: string; periodStart: number };
+
+function parseBudgetMeta(raw: string | null): BudgetMeta | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && 'dailyCap' in parsed) {
+      return { dailyCap: String(parsed.dailyCap), periodStart: Number(parsed.periodStart) || 0 };
+    }
+    return { dailyCap: String(parsed), periodStart: 0 };
+  } catch {
+    return { dailyCap: raw, periodStart: 0 };
+  }
+}
 
 export function useAdminDelegation() {
   const { walletClient, publicClient, address, ensureChain } = useWallet();
@@ -523,29 +647,30 @@ export function useAdminDelegation() {
   const [delegation, setDelegation] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [hsaBalance, setHsaBalance] = useState<bigint | null>(null);
-  const [initialBudget, setInitialBudget] = useState<string>('0');
+  const [budgetMeta, setBudgetMeta] = useState<BudgetMeta | null>(null);
+  const [periodAvailable, setPeriodAvailable] = useState<bigint | null>(null);
+  const [periodResetsAt, setPeriodResetsAt] = useState<number | null>(null);
 
   // On mount, load any existing delegation from localStorage
   useEffect(() => {
-    if (!address) { setDelegation(null); return; }
+    if (!address) { setDelegation(null); setBudgetMeta(null); return; }
     const saved = localStorage.getItem(getStorageKey(address));
     if (saved) {
       try {
         setDelegation(JSON.parse(saved, (key, value) =>
           typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value
         ));
-        const savedBudget = localStorage.getItem(getBudgetStorageKey(address));
-        setInitialBudget(savedBudget ?? '1');
+        setBudgetMeta(parseBudgetMeta(localStorage.getItem(getBudgetStorageKey(address))));
       } catch (e) {
         console.error('Failed to parse saved delegation', e);
       }
     } else {
       setDelegation(null);
-      setInitialBudget('0');
+      setBudgetMeta(null);
     }
   }, [address]);
 
-  // Poll the HSA's live balance every 5 seconds to power the progress bar
+  // Poll the HSA's live balance every 5 seconds
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (delegation && smartAccount && publicClient) {
@@ -562,6 +687,38 @@ export function useAdminDelegation() {
     }
     return () => clearInterval(interval);
   }, [delegation, smartAccount, publicClient]);
+
+  // Track how much of the current window's allowance is left, and when it
+  // resets. The NativeTokenPeriodTransferEnforcer stores nothing until the
+  // first redemption, so before then we just show the full daily cap.
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (delegation && smartAccount && publicClient) {
+      const refresh = async () => {
+        if (budgetMeta && budgetMeta.periodStart > 0) {
+          const now = Math.floor(Date.now() / 1000);
+          const periodsDone = Math.floor(Math.max(0, now - budgetMeta.periodStart) / BUDGET_PERIOD_SECONDS) + 1;
+          setPeriodResetsAt(budgetMeta.periodStart + periodsDone * BUDGET_PERIOD_SECONDS);
+        }
+        try {
+          const res = await getNativeTokenPeriodTransferEnforcerAvailableAmount(
+            publicClient,
+            smartAccount.environment,
+            { delegation }
+          );
+          setPeriodAvailable(res.availableAmount);
+        } catch {
+          if (budgetMeta) setPeriodAvailable(parseEther(budgetMeta.dailyCap));
+        }
+      };
+      refresh();
+      interval = setInterval(refresh, 5000);
+    } else {
+      setPeriodAvailable(null);
+      setPeriodResetsAt(null);
+    }
+    return () => clearInterval(interval);
+  }, [delegation, smartAccount, publicClient, budgetMeta]);
 
   // Initialize the HSA instance on wallet connect (does not deploy it yet)
   useEffect(() => {
@@ -588,7 +745,11 @@ export function useAdminDelegation() {
     init();
   }, [address, walletClient, publicClient]);
 
-  const setupDelegation = async (budgetTrust: string = '5', maxCalls: number = 100) => {
+  const setupDelegation = async (
+    dailyCapTrust: string = '1',
+    prefundTrust: string = '5',
+    maxCalls: number = 100,
+  ) => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
       setError('Wallet not fully connected.');
       return;
@@ -610,20 +771,24 @@ export function useAdminDelegation() {
         }
       }
 
-      // Step 2: Fund the HSA with the user's chosen TRUST budget
+      // Step 2: Fund the HSA. This is the total staking balance; the per-day
+      // cap below limits how fast the relayer can draw it down. The user can
+      // top up the HSA address anytime to extend the runway.
       const saBal = await publicClient.getBalance({ address: smartAccount.address });
-      const budgetWei = parseEther(budgetTrust);
-      if (saBal < budgetWei) {
-        console.log(`Funding HSA with ${budgetTrust} TRUST...`);
+      const prefundWei = parseEther(prefundTrust);
+      if (saBal < prefundWei) {
+        console.log(`Funding HSA with ${prefundTrust} TRUST...`);
         const hash = await walletClient.sendTransaction({
           account: address,
           to: smartAccount.address,
-          value: budgetWei - saBal,
+          value: prefundWei - saBal,
         });
         await publicClient.waitForTransactionReceipt({ hash });
       }
 
-      // Step 3: Approve the MultiVault to operate with the HSA
+      // Step 3: Approve the HSA to deposit on the EOA's behalf.
+      // multiVault.approve(HSA, DEPOSIT) lets the HSA send deposit(receiver = EOA)
+      // calls so shares are credited to the user's wallet, not the HSA.
       console.log('Approving MultiVault...');
       const approveHash = await walletClient.sendTransaction({
         account: address,
@@ -637,14 +802,20 @@ export function useAdminDelegation() {
       await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
       // Step 4: Build the delegation with all Caveat Enforcers
-      const expiry = Math.floor(Date.now() / 1000) + 30 * 86400; // 30 days
+      const periodStart = Math.floor(Date.now() / 1000);
+      const expiry = periodStart + 30 * 86400; // 30 days
       const newDelegation = createDelegation({
         from: smartAccount.address,
         to: ADMIN_DELEGATEE,
         environment: smartAccount.environment,
         scope: {
-          type: ScopeType.NativeTokenTransferAmount,
-          maxAmount: budgetWei,
+          // Cap native TRUST spend per rolling window (a day) rather than over
+          // the delegation's whole lifetime. The enforcer refills the allowance
+          // automatically each window, so the user never has to re-delegate.
+          type: ScopeType.NativeTokenPeriodTransfer,
+          periodAmount: parseEther(dailyCapTrust),
+          periodDuration: BUDGET_PERIOD_SECONDS,
+          startDate: periodStart,
           allowedCalldata: [
             // Pin the `receiver` argument to the user's address.
             // This ensures the Admin can never stake to a different wallet.
@@ -672,8 +843,9 @@ export function useAdminDelegation() {
       localStorage.setItem(getStorageKey(address), JSON.stringify(signedDelegation, (key, value) =>
         typeof value === 'bigint' ? value.toString() + 'n' : value
       ));
-      localStorage.setItem(getBudgetStorageKey(address), budgetTrust);
-      setInitialBudget(budgetTrust);
+      const meta: BudgetMeta = { dailyCap: dailyCapTrust, periodStart };
+      localStorage.setItem(getBudgetStorageKey(address), JSON.stringify(meta));
+      setBudgetMeta(meta);
       console.log('Setup complete!');
 
     } catch (e: any) {
@@ -687,7 +859,9 @@ export function useAdminDelegation() {
   const clearDelegation = () => {
     setDelegation(null);
     setHsaBalance(null);
-    setInitialBudget('0');
+    setBudgetMeta(null);
+    setPeriodAvailable(null);
+    setPeriodResetsAt(null);
     if (address) {
       localStorage.removeItem(getStorageKey(address));
       localStorage.removeItem(getBudgetStorageKey(address));
@@ -731,7 +905,7 @@ export function useAdminDelegation() {
         await publicClient.waitForTransactionReceipt({ hash: sweepHash });
       }
 
-      // Revoking means removing the MultiVault's approval from the HSA
+      // Revoking flips the HSA's deposit approval back to NONE
       console.log('Revoking MultiVault approval...');
       const hash = await walletClient.sendTransaction({
         account: address,
@@ -763,7 +937,9 @@ export function useAdminDelegation() {
     clearDelegation,
     revokeDelegation,
     hsaBalance,
-    initialBudget,
+    dailyCap: budgetMeta?.dailyCap ?? '0',
+    periodAvailable,
+    periodResetsAt,
   };
 }
 ```
@@ -1155,7 +1331,8 @@ const handleOppose = async () => {
 This almost always means a Caveat Enforcer rejected the execution. Common causes:
 
 * **Wrong function selector** - The `AllowedMethods` caveat requires the 4-byte EVM selector. Always use `toFunctionSelector()`, never pass the raw string.
-* **Budget exhausted** - The user's HSA balance has dropped below the `assets` value being sent.
+* **HSA balance too low** - The HSA's TRUST balance has dropped below the `assets` value being sent. Top up the HSA address.
+* **Daily cap hit** - The `NativeTokenPeriodTransferEnforcer` rejects the deposit because it would exceed `periodAmount` for the current 24h window. Wait for the window to reset (the UI shows the countdown) or raise the cap by re-delegating.
 * **Receiver mismatch** - The `userAddress` sent to the API does not match the address pinned in the `allowedCalldata` caveat during setup.
 
 ### `MultiVault_DepositBelowMinimumDeposit`

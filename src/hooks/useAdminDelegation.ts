@@ -11,8 +11,9 @@ import {
   MetaMaskSmartAccount
 } from '@metamask/smart-accounts-kit';
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
+import { getNativeTokenPeriodTransferEnforcerAvailableAmount } from '@metamask/smart-accounts-kit/actions';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 // The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
@@ -23,6 +24,25 @@ export const ADMIN_DELEGATEE: Address =
 const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
 const getBudgetStorageKey = (addr: string) => `intuition_admin_budget_${addr.toLowerCase()}`;
 
+// Per-address budget metadata saved alongside the delegation. `dailyCap` is the
+// TRUST the relayer may spend per window; `periodStart` is the unix second the
+// first window opened, used to show when the allowance next resets.
+type BudgetMeta = { dailyCap: string; periodStart: number };
+
+function parseBudgetMeta(raw: string | null): BudgetMeta | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && 'dailyCap' in parsed) {
+      return { dailyCap: String(parsed.dailyCap), periodStart: Number(parsed.periodStart) || 0 };
+    }
+    // Legacy value: a bare budget string with no window info.
+    return { dailyCap: String(parsed), periodStart: 0 };
+  } catch {
+    return { dailyCap: raw, periodStart: 0 };
+  }
+}
+
 export function useAdminDelegation() {
   const { walletClient, publicClient, address, ensureChain } = useWallet();
   const [smartAccount, setSmartAccount] = useState<MetaMaskSmartAccount | null>(null);
@@ -30,14 +50,16 @@ export function useAdminDelegation() {
   const [delegation, setDelegation] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hsaBalance, setHsaBalance] = useState<bigint | null>(null);
-  const [initialBudget, setInitialBudget] = useState<string>('0');
+  const [budgetMeta, setBudgetMeta] = useState<BudgetMeta | null>(null);
+  const [periodAvailable, setPeriodAvailable] = useState<bigint | null>(null);
+  const [periodResetsAt, setPeriodResetsAt] = useState<number | null>(null);
 
   // Load existing delegation from local storage
   useEffect(() => {
     if (!address) {
       queueMicrotask(() => {
         setDelegation(null);
-        setInitialBudget('0');
+        setBudgetMeta(null);
       });
       return;
     }
@@ -47,22 +69,22 @@ export function useAdminDelegation() {
         const parsed = JSON.parse(saved, (key, value) =>
           typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value
         );
-        const savedBudget = localStorage.getItem(getBudgetStorageKey(address)) ?? '1';
+        const meta = parseBudgetMeta(localStorage.getItem(getBudgetStorageKey(address)));
         queueMicrotask(() => {
           setDelegation(parsed);
-          setInitialBudget(savedBudget);
+          setBudgetMeta(meta);
         });
       } catch (e) {
         console.error('Failed to parse saved delegation', e);
         queueMicrotask(() => {
           setDelegation(null);
-          setInitialBudget('0');
+          setBudgetMeta(null);
         });
       }
     } else {
       queueMicrotask(() => {
         setDelegation(null);
-        setInitialBudget('0');
+        setBudgetMeta(null);
       });
     }
   }, [address]);
@@ -87,6 +109,50 @@ export function useAdminDelegation() {
       clearInterval(interval);
     };
   }, [delegation, smartAccount, publicClient]);
+
+  // Track how much of the current window's allowance is still available. The
+  // NativeTokenPeriodTransferEnforcer stores nothing until the first redemption,
+  // so before then we just show the full daily cap.
+  useEffect(() => {
+    if (!delegation || !smartAccount || !publicClient) {
+      queueMicrotask(() => {
+        setPeriodAvailable(null);
+        setPeriodResetsAt(null);
+      });
+      return;
+    }
+    let isMounted = true;
+    const refresh = async () => {
+      // When the current window rolls over (and the allowance refills).
+      if (budgetMeta && budgetMeta.periodStart > 0) {
+        const now = Math.floor(Date.now() / 1000);
+        const periodsDone =
+          Math.floor(Math.max(0, now - budgetMeta.periodStart) / BUDGET_PERIOD_SECONDS) + 1;
+        if (isMounted) setPeriodResetsAt(budgetMeta.periodStart + periodsDone * BUDGET_PERIOD_SECONDS);
+      }
+      try {
+        const res = await getNativeTokenPeriodTransferEnforcerAvailableAmount(
+          publicClient,
+          smartAccount.environment,
+          { delegation: delegation as Parameters<typeof getNativeTokenPeriodTransferEnforcerAvailableAmount>[2]['delegation'] }
+        );
+        if (isMounted) setPeriodAvailable(res.availableAmount);
+      } catch {
+        // The enforcer stores nothing until the first redemption -- full cap is available.
+        if (isMounted && budgetMeta) {
+          try {
+            setPeriodAvailable(parseEther(budgetMeta.dailyCap));
+          } catch {}
+        }
+      }
+    };
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [delegation, smartAccount, publicClient, budgetMeta]);
 
   // Initialize the HSA instance (this does not deploy it on-chain yet)
   useEffect(() => {
@@ -114,7 +180,11 @@ export function useAdminDelegation() {
     init();
   }, [address, walletClient, publicClient]);
 
-  const setupDelegation = async (budgetTrust: string = '5', maxCalls: number = 100) => {
+  const setupDelegation = async (
+    dailyCapTrust: string = '1',
+    prefundTrust: string = '5',
+    maxCalls: number = 100,
+  ) => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
       setError('Wallet not fully connected or Smart Account not initialized.');
       return;
@@ -141,22 +211,26 @@ export function useAdminDelegation() {
         }
       }
 
-      // 2. Fund the HSA (the "budget" for staking)
+      // 2. Fund the HSA. This is the total staking balance; the per-day cap
+      // below limits how fast the relayer can draw it down. Top up the HSA
+      // address anytime to extend the runway.
       const saBal = await publicClient.getBalance({ address: smartAccount.address });
-      const budgetWei = parseEther(budgetTrust);
-      if (saBal < budgetWei) {
-        console.log(`Funding HSA with ${budgetTrust} TRUST...`);
+      const prefundWei = parseEther(prefundTrust);
+      if (saBal < prefundWei) {
+        console.log(`Funding HSA with ${prefundTrust} TRUST...`);
         const hash = await walletClient.sendTransaction({
           account: address,
           to: smartAccount.address,
-          value: budgetWei - saBal,
+          value: prefundWei - saBal,
           chain: intuitionMainnet,
         });
         await publicClient.waitForTransactionReceipt({ hash });
       }
 
-      // 3. Approve the MultiVault to use HSA funds for staking
-      // (The user's EOA signs the approval for the HSA so the HSA can deposit in the EOA's name)
+      // 3. Approve the HSA to deposit on the EOA's behalf.
+      // The EOA calls multiVault.approve(HSA, DEPOSIT) so the relayer's delegated
+      // deposit(receiver = EOA) calls are accepted and credit shares to the EOA,
+      // not the HSA. The MultiVault never moves the HSA's funds itself.
       console.log('Approving MultiVault...');
       const approveHash = await walletClient.sendTransaction({
         account: address,
@@ -171,14 +245,21 @@ export function useAdminDelegation() {
       await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
       // 4. Create Delegation with strict caveats
-      const expiry = Math.floor(Date.now() / 1000) + 30 * 86400; // 30 days
+      const periodStart = Math.floor(Date.now() / 1000);
+      const expiry = periodStart + 30 * 86400; // 30 days
+      const dailyCapWei = parseEther(dailyCapTrust);
       const newDelegation = createDelegation({
         from: smartAccount.address,
         to: ADMIN_DELEGATEE,
         environment: smartAccount.environment,
         scope: {
-          type: ScopeType.NativeTokenTransferAmount,
-          maxAmount: budgetWei,
+          // Cap native TRUST spend per rolling window instead of over the
+          // delegation's whole lifetime. The enforcer resets the allowance
+          // automatically each window, so the user never has to re-delegate.
+          type: ScopeType.NativeTokenPeriodTransfer,
+          periodAmount: dailyCapWei,
+          periodDuration: BUDGET_PERIOD_SECONDS,
+          startDate: periodStart,
           allowedCalldata: [
             // Pin the receiver argument so stakes are ALWAYS credited to the user's main wallet.
             // Notice we do NOT pin the termId here so the admin can stake on any claim for the user.
@@ -206,8 +287,9 @@ export function useAdminDelegation() {
       localStorage.setItem(getStorageKey(address), JSON.stringify(signedDelegation, (key, value) =>
         typeof value === 'bigint' ? value.toString() + 'n' : value
       ));
-      localStorage.setItem(getBudgetStorageKey(address), budgetTrust);
-      setInitialBudget(budgetTrust);
+      const meta: BudgetMeta = { dailyCap: dailyCapTrust, periodStart };
+      localStorage.setItem(getBudgetStorageKey(address), JSON.stringify(meta));
+      setBudgetMeta(meta);
       console.log('Setup complete!');
 
     } catch (e: unknown) {
@@ -222,7 +304,9 @@ export function useAdminDelegation() {
   const clearDelegation = () => {
     setDelegation(null);
     setHsaBalance(null);
-    setInitialBudget('0');
+    setBudgetMeta(null);
+    setPeriodAvailable(null);
+    setPeriodResetsAt(null);
     if (address) {
       localStorage.removeItem(getStorageKey(address));
       localStorage.removeItem(getBudgetStorageKey(address));
@@ -304,6 +388,8 @@ export function useAdminDelegation() {
     clearDelegation,
     revokeDelegation,
     hsaBalance,
-    initialBudget
+    dailyCap: budgetMeta?.dailyCap ?? '0',
+    periodAvailable,
+    periodResetsAt,
   };
 }
