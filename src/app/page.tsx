@@ -1,6 +1,5 @@
 import { ConnectButton } from '@/components/ConnectButton';
-import { ClaimFeed } from '@/components/ClaimFeed';
-import { UpgradeAccount } from '@/components/UpgradeAccount';
+import { AppShell } from '@/components/AppShell';
 
 export default function Home() {
   return (
@@ -16,12 +15,7 @@ export default function Home() {
           <ConnectButton />
         </header>
 
-        <UpgradeAccount />
-
-        <div className="mt-20">
-          <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">Activity Feed</h2>
-          <ClaimFeed />
-        </div>
+        <AppShell />
       </div>
     </main>
   );

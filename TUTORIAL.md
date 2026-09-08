@@ -957,7 +957,7 @@ On Intuition, every claim is structured as a **Triple**: a Subject, a Predicate,
 
 **What is the Intuition GraphQL API?**
 
-Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. We use the `@0xintuition/graphql` SDK which generates type-safe React Query hooks from this API. In our case, `useInfiniteGetTriplesQuery` gives us a paginated list of all Triples, sorted by newest first.
+Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. We use the `@0xintuition/graphql` SDK which generates type-safe React Query hooks from this API. We use `useInfiniteGetTriplesWithPositionsQuery` - a paginated list of all Triples, newest first, that also takes an `address` and returns *that address's* position (shares held) in each Triple's positive and counter vault. We use those positions to lock a user to one side of a claim: if you already hold a Support position, the Oppose button is disabled, and vice versa.
 
 Create `src/components/ClaimFeed.tsx`. We will start with just the feed UI with placeholder handlers for Support and Oppose - then we will wire up the real delegation logic in the next section.
 
@@ -966,9 +966,19 @@ Create `src/components/ClaimFeed.tsx`. We will start with just the feed UI with 
 'use client';
 
 import { useWallet } from '@/lib/WalletContext';
-import { useInfiniteGetTriplesQuery } from '@0xintuition/graphql';
+import { useInfiniteGetTriplesWithPositionsQuery } from '@0xintuition/graphql';
 import { formatUnits } from 'viem';
 import { useState, useRef, useCallback } from 'react';
+
+const PORTAL_TRIPLE_URL = (termId: string) =>
+  `https://portal.intuition.systems/explore/triple/${termId}?tab=positions`;
+
+// The positions list is pre-filtered to the connected address by the query.
+const holdsPosition = (vault: { positions?: { shares?: string | null }[] } | null | undefined) =>
+  Array.isArray(vault?.positions) &&
+  vault.positions.some((p) => {
+    try { return BigInt(p?.shares ?? '0') > BigInt(0); } catch { return false; }
+  });
 
 function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
   const { address } = useWallet();
@@ -983,6 +993,10 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
   const opposeShares = optimisticOppose !== null
     ? optimisticOppose
     : BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
+
+  // One side only: a Support position locks Oppose and vice versa.
+  const hasSupport = holdsPosition(claim.term?.vaults?.[0]) || optimisticSupport !== null;
+  const hasOppose = holdsPosition(claim.counter_term?.vaults?.[0]) || optimisticOppose !== null;
 
   const handleSupport = async () => {
     // We will wire this up in the next section
@@ -1009,9 +1023,19 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
           <span className="font-bold text-white font-mono">
             {creatorAddress.slice(0, 6)}...{creatorAddress.slice(-4)}
           </span>
-          <span className="text-white/30 text-xs font-mono tracking-wider">
-            {new Date(claim.created_at).toLocaleDateString()}
-          </span>
+          <div className="flex items-center space-x-3">
+            <a
+              href={PORTAL_TRIPLE_URL(claim.term_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-white/30 hover:text-white text-[10px] font-mono uppercase tracking-widest transition-colors"
+            >
+              Portal ↗
+            </a>
+            <span className="text-white/30 text-xs font-mono tracking-wider">
+              {new Date(claim.created_at).toLocaleDateString()}
+            </span>
+          </div>
         </div>
 
         <div className="text-white/90 text-base leading-relaxed mb-4">
@@ -1023,29 +1047,37 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
         <div className="flex items-center space-x-6 text-sm text-white/50 font-mono">
           <button
             onClick={handleSupport}
-            disabled={isPending}
-            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-50 group"
+            disabled={isPending || optimisticSupport !== null || hasOppose}
+            title={hasOppose ? 'You hold an Oppose position on this claim' : undefined}
+            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed group"
           >
             <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
               SUPPORT
             </span>
-            <span className={optimisticSupport !== null ? 'text-green-400 font-bold' : ''}>
+            <span className={hasSupport ? 'text-green-400 font-bold' : ''}>
               {Number(formatUnits(supportShares, 18)).toFixed(4)}
             </span>
           </button>
 
           <button
             onClick={handleOppose}
-            disabled={isPending}
-            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-50 group"
+            disabled={isPending || optimisticOppose !== null || hasSupport}
+            title={hasSupport ? 'You hold a Support position on this claim' : undefined}
+            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed group"
           >
             <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
               OPPOSE
             </span>
-            <span className={optimisticOppose !== null ? 'text-red-400 font-bold' : ''}>
+            <span className={hasOppose ? 'text-red-400 font-bold' : ''}>
               {Number(formatUnits(opposeShares, 18)).toFixed(4)}
             </span>
           </button>
+
+          {(hasSupport || hasOppose) && (
+            <span className={`text-[10px] uppercase tracking-widest ${hasSupport ? 'text-green-400/70' : 'text-red-400/70'}`}>
+              Your position: {hasSupport ? 'Support' : 'Oppose'}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -1053,8 +1085,14 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
 }
 
 export function ClaimFeed() {
-  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteGetTriplesQuery(
-    { limit: 10, orderBy: [{ created_at: 'desc' }] },
+  const { address } = useWallet();
+  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteGetTriplesWithPositionsQuery(
+    {
+      limit: 10,
+      orderBy: [{ created_at: 'desc' }],
+      // Matched with `_ilike`, so a sentinel returns no positions when disconnected.
+      address: address ?? '0x0000000000000000000000000000000000000000',
+    },
     {
       initialPageParam: { offset: 0 },
       getNextPageParam: (lastPage, allPages) => {

@@ -1,11 +1,28 @@
 'use client';
 
 import { useWallet } from '@/lib/WalletContext';
-import { useGetTriplesQuery, useInfiniteGetTriplesQuery } from '@0xintuition/graphql';
+import { useInfiniteGetTriplesWithPositionsQuery } from '@0xintuition/graphql';
 import { multiVaultDeposit } from '@0xintuition/protocol';
 import { formatUnits, parseEther } from 'viem';
 import { useState, useRef, useCallback } from 'react';
 import { MULTIVAULT } from '@/lib/constants';
+
+const PORTAL_TRIPLE_URL = (termId: string) =>
+  `https://portal.intuition.systems/explore/triple/${termId}?tab=positions`;
+
+type VaultWithPositions = { positions?: { shares?: string | null }[] } | null | undefined;
+
+// Does the connected wallet already hold shares in this vault? The positions
+// list is pre-filtered to the current address by the GraphQL query.
+const holdsPosition = (vault: VaultWithPositions): boolean =>
+  Array.isArray(vault?.positions) &&
+  vault.positions.some((p) => {
+    try {
+      return BigInt(p?.shares ?? '0') > BigInt(0);
+    } catch {
+      return false;
+    }
+  });
 
 const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
 const reviveBigInt = (key: string, value: any) =>
@@ -21,6 +38,11 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
   const curveId = BigInt(1); // Default Curve
   const supportShares = optimisticSupport !== null ? optimisticSupport : BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
   const opposeShares = optimisticOppose !== null ? optimisticOppose : BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
+
+  // You can only be on one side of a claim: holding a Support position locks
+  // Oppose and vice versa (an optimistic stake this session counts too).
+  const hasSupport = holdsPosition(claim.term?.vaults?.[0]) || optimisticSupport !== null;
+  const hasOppose = holdsPosition(claim.counter_term?.vaults?.[0]) || optimisticOppose !== null;
 
   const handleSupport = async () => {
     if (!address || !walletClient || !publicClient) return;
@@ -139,9 +161,19 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
           <span className="font-bold text-white hover:underline cursor-pointer font-mono">
             {truncatedCreator}
           </span>
-          <span className="text-white/30 text-xs font-mono tracking-wider">
-            {new Date(claim.created_at).toLocaleDateString()}
-          </span>
+          <div className="flex items-center space-x-3">
+            <a
+              href={PORTAL_TRIPLE_URL(claim.term_id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-white/30 hover:text-white text-[10px] font-mono uppercase tracking-widest transition-colors"
+            >
+              Portal ↗
+            </a>
+            <span className="text-white/30 text-xs font-mono tracking-wider">
+              {new Date(claim.created_at).toLocaleDateString()}
+            </span>
+          </div>
         </div>
 
         {/* Body */}
@@ -153,31 +185,39 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
         
         {/* Actions (Support / Oppose) */}
         <div className="flex items-center space-x-6 text-sm text-white/50 font-mono">
-          <button 
+          <button
             onClick={handleSupport}
-            disabled={isPending || optimisticSupport !== null}
-            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-50 group"
+            disabled={isPending || optimisticSupport !== null || hasOppose}
+            title={hasOppose ? 'You hold an Oppose position on this claim' : undefined}
+            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-30 disabled:hover:text-white/50 disabled:cursor-not-allowed group"
           >
             <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
               ↑ SUPPORT
             </span>
-            <span className={optimisticSupport !== null ? "text-green-400 font-bold" : ""}>
+            <span className={(hasSupport ? "text-green-400 font-bold" : "")}>
               {Number(formatUnits(supportShares, 18)).toFixed(4)}
             </span>
           </button>
-          
-          <button 
+
+          <button
             onClick={handleOppose}
-            disabled={isPending || optimisticOppose !== null}
-            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-50 group"
+            disabled={isPending || optimisticOppose !== null || hasSupport}
+            title={hasSupport ? 'You hold a Support position on this claim' : undefined}
+            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-30 disabled:hover:text-white/50 disabled:cursor-not-allowed group"
           >
             <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
               ↓ OPPOSE
             </span>
-            <span className={optimisticOppose !== null ? "text-red-400 font-bold" : ""}>
+            <span className={(hasOppose ? "text-red-400 font-bold" : "")}>
               {Number(formatUnits(opposeShares, 18)).toFixed(4)}
             </span>
           </button>
+
+          {(hasSupport || hasOppose) && (
+            <span className={`text-[10px] uppercase tracking-widest ${hasSupport ? 'text-green-400/70' : 'text-red-400/70'}`}>
+              Your position: {hasSupport ? 'Support' : 'Oppose'}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -185,10 +225,13 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
 }
 
 export function ClaimFeed() {
-  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteGetTriplesQuery(
+  const { address } = useWallet();
+  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteGetTriplesWithPositionsQuery(
     {
       limit: 10,
-      orderBy: [{ created_at: 'desc' }]
+      orderBy: [{ created_at: 'desc' }],
+      // `_ilike` match, so a non-address sentinel returns no positions when disconnected.
+      address: address ?? '0x0000000000000000000000000000000000000000',
     },
     {
       initialPageParam: { offset: 0 },

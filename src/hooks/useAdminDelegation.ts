@@ -29,6 +29,37 @@ const getBudgetStorageKey = (addr: string) => `intuition_admin_budget_${addr.toL
 // first window opened, used to show when the allowance next resets.
 type BudgetMeta = { dailyCap: string; periodStart: number };
 
+// Which step of setupDelegation() is currently running, so the UI can show a
+// live onboarding stepper.
+export type SetupPhase = 'idle' | 'deploying' | 'funding' | 'approving' | 'signing' | 'done';
+
+export const SETUP_STEPS: { phase: SetupPhase; title: string; detail: string }[] = [
+  {
+    phase: 'deploying',
+    title: 'Deploy Hybrid Smart Account',
+    detail:
+      'An ERC-7702 upgrade gives your existing wallet address smart-account code. Same address, no funds moved. One-time.',
+  },
+  {
+    phase: 'funding',
+    title: 'Fund the HSA',
+    detail:
+      'Move TRUST from your wallet into the smart account. This is the balance the relayer stakes from; the daily cap limits how fast it can be spent.',
+  },
+  {
+    phase: 'approving',
+    title: 'Approve the MultiVault',
+    detail:
+      'Your wallet calls multiVault.approve(HSA, DEPOSIT) so the relayer can deposit with you as the receiver — shares are always credited to your wallet, never the HSA.',
+  },
+  {
+    phase: 'signing',
+    title: 'Sign the delegation',
+    detail:
+      'An off-chain signature (no gas) scoping the relayer to deposit-only, your address as receiver, a per-day TRUST cap, and an expiry.',
+  },
+];
+
 function parseBudgetMeta(raw: string | null): BudgetMeta | null {
   if (!raw) return null;
   try {
@@ -53,6 +84,7 @@ export function useAdminDelegation() {
   const [budgetMeta, setBudgetMeta] = useState<BudgetMeta | null>(null);
   const [periodAvailable, setPeriodAvailable] = useState<bigint | null>(null);
   const [periodResetsAt, setPeriodResetsAt] = useState<number | null>(null);
+  const [setupPhase, setSetupPhase] = useState<SetupPhase>('idle');
 
   // Load existing delegation from local storage
   useEffect(() => {
@@ -196,6 +228,7 @@ export function useAdminDelegation() {
       await ensureChain();
 
       // 1. Deploy the HSA if not deployed
+      setSetupPhase('deploying');
       const isDeployed = await smartAccount.isDeployed();
       if (!isDeployed) {
         console.log('Deploying HSA...');
@@ -214,6 +247,7 @@ export function useAdminDelegation() {
       // 2. Fund the HSA. This is the total staking balance; the per-day cap
       // below limits how fast the relayer can draw it down. Top up the HSA
       // address anytime to extend the runway.
+      setSetupPhase('funding');
       const saBal = await publicClient.getBalance({ address: smartAccount.address });
       const prefundWei = parseEther(prefundTrust);
       if (saBal < prefundWei) {
@@ -231,6 +265,7 @@ export function useAdminDelegation() {
       // The EOA calls multiVault.approve(HSA, DEPOSIT) so the relayer's delegated
       // deposit(receiver = EOA) calls are accepted and credit shares to the EOA,
       // not the HSA. The MultiVault never moves the HSA's funds itself.
+      setSetupPhase('approving');
       console.log('Approving MultiVault...');
       const approveHash = await walletClient.sendTransaction({
         account: address,
@@ -278,6 +313,7 @@ export function useAdminDelegation() {
       });
 
       // 5. Sign the Delegation
+      setSetupPhase('signing');
       console.log('Signing Delegation...');
       const signature = await smartAccount.signDelegation({ delegation: newDelegation });
       const signedDelegation = { ...newDelegation, signature };
@@ -290,12 +326,14 @@ export function useAdminDelegation() {
       const meta: BudgetMeta = { dailyCap: dailyCapTrust, periodStart };
       localStorage.setItem(getBudgetStorageKey(address), JSON.stringify(meta));
       setBudgetMeta(meta);
+      setSetupPhase('done');
       console.log('Setup complete!');
 
     } catch (e: unknown) {
       console.error(e);
       const err = e as { shortMessage?: string; message?: string };
       setError(err.shortMessage ?? err.message ?? 'An error occurred during setup');
+      setSetupPhase('idle');
     } finally {
       setIsDeploying(false);
     }
@@ -307,6 +345,7 @@ export function useAdminDelegation() {
     setBudgetMeta(null);
     setPeriodAvailable(null);
     setPeriodResetsAt(null);
+    setSetupPhase('idle');
     if (address) {
       localStorage.removeItem(getStorageKey(address));
       localStorage.removeItem(getBudgetStorageKey(address));
@@ -391,5 +430,6 @@ export function useAdminDelegation() {
     dailyCap: budgetMeta?.dailyCap ?? '0',
     periodAvailable,
     periodResetsAt,
+    setupPhase,
   };
 }
