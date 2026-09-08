@@ -85,7 +85,7 @@ Here is how delegation permissions are derived, funded, signed, and stored:
 
 * **Off-Chain Storage**: The signed delegation payload is saved in local storage without incurring any transaction gas fees for the user.
 
-![Delegation Flow Diagram](./assets/delegation_flow.webp)
+![Delegation setup flow: deploy HSA, fund it, approve the MultiVault, sign the scoped delegation](./assets/delegation_flow.svg)
 
 
 ### User Flow
@@ -100,7 +100,7 @@ Once delegation is configured, here is how user interactions, relayer dispatch, 
 
 * **Caveat Verification and Settlement**: The DelegationManager contract verifies the user's cryptographic signature, enforces all attached caveats, and executes the deposit on the MultiVault contract, crediting vault shares directly to the user's account.
 
-![User Flow Diagram](./assets/user_flow.png)
+![Per-action flow: user click, relayer redeems the delegation through the DelegationManager, MultiVault credits shares to the user](./assets/user_flow.svg)
 
 ---
 
