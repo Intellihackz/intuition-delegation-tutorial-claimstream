@@ -26,7 +26,6 @@ Through this project, developers learn how to:
 ## App Features
 
 - **Intuition Claim Feed**: Paginated, infinite scroll feed of claims (triples) powered by `@0xintuition/graphql`.
-- **Claim Creation**: Form to publish Subjects, Predicates, and Objects (Atoms) and link them into Triples using `@0xintuition/sdk`.
 - **Delegated Staking**: Support or Oppose claims instantly without transaction popups via backend delegated execution.
 - **HSA Budget Dashboard**: Live balance indicator for the user's Hybrid Smart Account.
 

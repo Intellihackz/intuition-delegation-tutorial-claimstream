@@ -2,7 +2,7 @@
 
 Welcome! In this tutorial, we're going to build a fully functional **Claim Feed** on the Intuition Protocol.
 
-By the end, you'll have a production-ready Next.js application where users can connect their MetaMask wallet, publish new statements to the Intuition Ledger, browse a live feed of claims, and support or oppose them - all without a single MetaMask popup per action.
+By the end, you'll have a production-ready Next.js application where users can connect their MetaMask wallet, browse a live feed of claims, and support or oppose them - all without a single MetaMask popup per action.
 
 ## Table of Contents
 
@@ -12,7 +12,6 @@ By the end, you'll have a production-ready Next.js application where users can c
 * [Project Setup](#project-setup)
 * [Wallet Connection](#wallet-connection)
 * [The Upgrade Account Section](#the-upgrade-account-section)
-* [Publishing Claims](#publishing-claims)
 * [The Claim Feed UI](#the-claim-feed-ui)
 * [Integrating Delegation Redemption](#integrating-delegation-redemption)
 
@@ -38,7 +37,6 @@ Here is exactly what our Claim Feed will do by the end of this tutorial:
 * **Intuition Network Connection** - Connect MetaMask and automatically switch to the Intuition Mainnet
 * **Delegated Staking Setup Panel** - Let users deploy a Hybrid Smart Account and sign a scoped delegation in one flow
 * **HSA Budget Progress Bar** - A live display showing how much delegated budget the user has remaining
-* **Claim Publishing Form** - A form where users can write statements that get published to the Intuition Ledger
 * **Infinite Scroll Feed** - A live, paginated feed of all claims on the protocol, with Support and Oppose buttons
 * **Delegation Revocation** - Let users revoke their delegated staking permissions at any time
 
@@ -773,116 +771,13 @@ export function useAdminDelegation() {
 
 ---
 
-## Publishing Claims
+## The Claim Feed UI
 
-Now let's build the form that lets users publish new statements to the Intuition Ledger. Since this is a heavier, less frequent action, we keep a standard MetaMask signature for it.
-
+Now let's build the feed that displays all claims from the Intuition Protocol and lets users interact with them.
 
 **What is a Triple?**
 
-On Intuition, every statement is structured as a **Triple**: a Subject, a Predicate, and an Object - three pieces of information linked together. Before you can create a Triple, each of those three pieces must exist as an **Atom** on the ledger. The `@0xintuition/sdk` abstracts this away - calling `createAtomFromString` will automatically check if the Atom already exists and only create it if it doesn't.
-
-Create `src/components/CreateClaimForm.tsx`:
-
-```tsx
-// src/components/CreateClaimForm.tsx
-'use client';
-
-import { useState } from 'react';
-import { useWallet } from '@/lib/WalletContext';
-import { createAtomFromString, createTripleStatement } from '@0xintuition/sdk';
-import { parseAbi } from 'viem';
-import { MULTIVAULT } from '@/lib/constants';
-
-// We read the triple cost live from the contract so we never underpay
-const costAbi = parseAbi(['function getTripleCost() view returns (uint256)']);
-
-export function CreateClaimForm() {
-  const [claimText, setClaimText] = useState('');
-  const { address, walletClient, publicClient, ensureChain } = useWallet();
-  const [isPending, setIsPending] = useState(false);
-
-  const subjectUri = `caip10:eip155:1:${address}`; // The user's own identity Atom
-  const predicateUri = `claims`;
-  const objectUri = claimText; // The actual statement
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!address || !claimText || !walletClient || !publicClient) return;
-    setIsPending(true);
-
-    try {
-      // Guard against the user being on the wrong network before submitting
-      await ensureChain();
-
-      const patchedWalletClient = { ...walletClient, account: address };
-      const config = { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient };
-
-      // Step 1: Create the three Atoms (Subject, Predicate, Object)
-      const subjectAtom = await createAtomFromString(config, subjectUri);
-      const predicateAtom = await createAtomFromString(config, predicateUri);
-      const objectAtom = await createAtomFromString(config, objectUri);
-
-      // Step 2: Read the current Triple creation cost from the contract
-      const tripleCost = await publicClient.readContract({
-        address: MULTIVAULT,
-        abi: costAbi,
-        functionName: 'getTripleCost',
-      });
-
-      // Step 3: Link the three Atoms together into a Triple
-      await createTripleStatement(config, {
-        args: [
-          [subjectAtom.state.termId],
-          [predicateAtom.state.termId],
-          [objectAtom.state.termId],
-          [tripleCost],
-        ],
-        value: tripleCost,
-      });
-
-      setClaimText('');
-      alert('Success! Your claim has been created.');
-    } catch (e: any) {
-      console.error(e);
-      alert('Error creating claim: ' + e.message);
-    }
-    setIsPending(false);
-  };
-
-  if (!address) return null;
-
-  return (
-    <form onSubmit={handleCreate} className="bg-[#111] p-8 rounded-none border border-white/10 mb-8 relative group">
-      <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-      <h2 className="text-xl font-bold text-white mb-6 uppercase tracking-widest">Publish</h2>
-      <div className="mb-6">
-        <textarea
-          value={claimText}
-          onChange={(e) => setClaimText(e.target.value)}
-          className="w-full px-4 py-4 bg-black/50 text-white border border-white/20 focus:border-white focus:ring-1 focus:ring-white transition-all outline-none resize-none font-mono text-sm placeholder:text-white/30"
-          placeholder="ENTER STATEMENT..."
-          rows={3}
-        />
-      </div>
-      <button
-        type="submit"
-        disabled={isPending || !claimText}
-        className="w-full bg-white text-black font-bold uppercase tracking-widest py-4 transition-all disabled:opacity-30 hover:bg-gray-200"
-      >
-        {isPending ? 'Processing...' : 'Submit to Ledger'}
-      </button>
-    </form>
-  );
-}
-```
-
-
----
-
-## The Claim Feed UI
-
-Now let's build the actual feed that displays all claims from the Intuition Protocol and lets users interact with them.
+On Intuition, every claim is structured as a **Triple**: a Subject, a Predicate, and an Object - three pieces of information linked together, each backed by its own **Atom** on the ledger. Every Triple has two bonding-curve vaults: a *positive* vault for users who agree with the statement and a *counter* vault for users who disagree. Supporting or opposing a claim is just a `deposit` into one of those two vaults - and that `deposit` is the single MultiVault action this app delegates. Creating new Atoms and Triples is out of scope here; this tutorial focuses on the delegated deposit lifecycle against claims that already exist on the protocol.
 
 **What is the Intuition GraphQL API?**
 

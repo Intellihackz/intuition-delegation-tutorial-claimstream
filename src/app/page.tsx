@@ -1,6 +1,5 @@
 import { ConnectButton } from '@/components/ConnectButton';
 import { ClaimFeed } from '@/components/ClaimFeed';
-import { CreateClaimForm } from '@/components/CreateClaimForm';
 import { UpgradeAccount } from '@/components/UpgradeAccount';
 
 export default function Home() {
@@ -12,14 +11,13 @@ export default function Home() {
             <h1 className="text-4xl font-black tracking-tighter text-white uppercase">
               Intuition<br/><span className="text-white/50">Claim Feed</span>
             </h1>
-            <p className="text-white/60 mt-4 text-sm uppercase tracking-widest font-semibold">Make claims. Support truth. Oppose falsehood.</p>
+            <p className="text-white/60 mt-4 text-sm uppercase tracking-widest font-semibold">Browse claims. Support truth. Oppose falsehood.</p>
           </div>
           <ConnectButton />
         </header>
 
         <UpgradeAccount />
-        <CreateClaimForm />
-        
+
         <div className="mt-20">
           <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">Activity Feed</h2>
           <ClaimFeed />
