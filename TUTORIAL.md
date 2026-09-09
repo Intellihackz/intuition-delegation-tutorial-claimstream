@@ -12,6 +12,7 @@ By the end, you'll have a production-ready Next.js application where users can c
 * [Project Setup](#project-setup)
 * [Wallet Connection](#wallet-connection)
 * [The Upgrade Account Section](#the-upgrade-account-section)
+* [The Activity Log](#the-activity-log)
 * [The Claim Feed UI](#the-claim-feed-ui)
 * [Integrating Delegation Redemption](#integrating-delegation-redemption)
 
@@ -37,12 +38,13 @@ Here is exactly what our Claim Feed will do by the end of this tutorial:
 * **Intuition Network Connection** - Connect MetaMask and automatically switch to the Intuition Mainnet
 * **Delegated Staking Setup Panel** - Let users deploy a Hybrid Smart Account and sign a scoped delegation in one flow
 * **Daily Allowance Meter** - A live display of how much of today's delegated spend cap is left and when it resets, plus the HSA balance and a block-explorer link
-* **Infinite Scroll Feed** - A live, paginated feed of all claims on the protocol, with Support and Oppose buttons
+* **Infinite Scroll Feed** - A live, paginated feed of all claims on the protocol. Each card is a toggle: Support / Oppose to open a position, click the same side again to withdraw it, or click the other side to switch (withdraw, then re-stake)
+* **Delegated Activity Log** - A bottom-docked, expandable panel that records every delegated `deposit` / `redeem` the relayer submitted, with the raw call and a link to the transaction
 * **Delegation Revocation** - Let users revoke their delegated staking permissions at any time
 
 ### Backend Features
 
-* **Gas Relayer API** - A secure Next.js API route that holds our Admin wallet's private key and executes delegated stakes on behalf of users
+* **Gas Relayer API** - A secure Next.js API route that holds our Admin wallet's private key and submits delegated deposits and withdrawals on behalf of users
 
 ---
 
@@ -60,13 +62,13 @@ To understand how this architecture operates, it is helpful to explore the core 
 
 * **[ERC-7710](https://eips.ethereum.org/EIPS/eip-7710) (Delegation Framework)**: A standardized protocol for creating, signing, and redeeming execution authority off-chain. Instead of giving a third party full access to a wallet, ERC-7710 allows the user to sign an off-chain EIP-712 payload that grants another address, known as the delegatee, permission to execute specific actions on their behalf.
 
-* **[Caveat Enforcers](https://docs.metamask.io/smart-accounts-kit/concepts/delegation/caveat-enforcers/)**: Smart contracts that enforce strict cryptographic constraints on the delegated payload. In the context of Intuition, caveats ensure that the delegatee can only call the MultiVault contract, can only execute the deposit function, can only spend up to a per-day TRUST cap that refills automatically, and can only execute a limited number of calls before the session key expires.
+* **[Caveat Enforcers](https://docs.metamask.io/smart-accounts-kit/concepts/delegation/caveat-enforcers/)**: Smart contracts that enforce strict cryptographic constraints on the delegated payload. In the context of Intuition, caveats ensure that the delegatee can only call the MultiVault contract, can only execute `deposit` and `redeem`, can only spend up to a per-day TRUST cap that refills automatically, always credits the user's own address, and can only execute a limited number of calls before the session key expires.
 
-* **Backend Relayer**: A secure application server holding an Admin Wallet private key. When a user clicks Support or Oppose on the claim feed, the frontend forwards the signed delegation payload to the relayer. The relayer then broadcasts the transaction to the blockchain, paying the gas fees so the user experiences zero transaction popups.
+* **Backend Relayer**: A secure application server holding an Admin Wallet private key. When a user acts on the claim feed, the frontend forwards the signed delegation payload to the relayer. The relayer then broadcasts the transaction to the blockchain, paying the gas fees so the user experiences zero transaction popups. It only *submits* the call — the funds moved are the HSA's, and everything is credited back to the user.
 
 * **[DelegationManager Contract](https://docs.metamask.io/smart-accounts-kit/concepts/delegation/delegation-manager/)**: The central verification engine on Intuition. It receives the delegation payload from the relayer, verifies the user's signature, passes the transaction parameters through every attached Caveat Enforcer, and only forwards the call to the destination contract if every rule condition passes.
 
-* **[Intuition MultiVault Contract](https://www.docs.intuition.systems/docs/intuition-smart-contracts/multivault)**: The core smart contract protocol that manages Atoms, Triples, and bonding curve vaults on Intuition. When the DelegationManager validates a delegated execution, it calls deposit on the MultiVault, crediting the resulting vault shares directly to the user's address.
+* **[Intuition MultiVault Contract](https://www.docs.intuition.systems/docs/intuition-smart-contracts/multivault)**: The core smart contract protocol that manages Atoms, Triples, and bonding curve vaults on Intuition. When the DelegationManager validates a delegated execution, it calls `deposit` (or `redeem`) on the MultiVault, crediting the resulting shares — or the withdrawn TRUST — directly to the user's address.
 
 To see how these concepts connect during setup and execution, let's explore the delegation flow and the user flow.
 
@@ -81,7 +83,7 @@ Here is how delegation permissions are derived, funded, signed, and stored:
 * **User Signs Delegation**: The user signs an off-chain EIP-712 delegation message where:
   * **from**: The user's HSA address
   * **to**: Our Admin Wallet address (`ADMIN_DELEGATEE`)
-  * **caveats**: Restricted strictly to calling `deposit()` on the Intuition MultiVault, up to a user-defined TRUST cap **per rolling 24h window** that resets automatically.
+  * **caveats**: Restricted to calling `deposit()` and `redeem()` on the Intuition MultiVault, with the receiver pinned to the user's own address, up to a user-defined TRUST cap **per rolling 24h window** that resets automatically. (Withdrawals move `value = 0`, so they don't touch the cap.)
 
 * **Off-Chain Storage**: The signed delegation payload is saved in local storage without incurring any transaction gas fees for the user.
 
@@ -92,13 +94,13 @@ Here is how delegation permissions are derived, funded, signed, and stored:
 
 Once delegation is configured, here is how user interactions, relayer dispatch, and on-chain settlement execute seamlessly:
 
-* **User Interaction**: The user clicks Support or Oppose on the claim feed with zero MetaMask popups.
+* **User Interaction**: The user clicks Support, Oppose, or their current side (to withdraw) on the claim feed, with zero MetaMask popups. Switching sides is two ops — a withdraw, then a deposit.
 
-* **Relayer Dispatch**: The frontend forwards the saved delegation payload to our backend `/api/stake` route.
+* **Relayer Dispatch**: For each op, the frontend forwards the saved delegation payload plus an `action` (`deposit` or `redeem`) to our backend `/api/stake` route.
 
 * **Admin Wallet Execution**: Our backend uses our Admin Wallet private key to submit `DelegationManager.redeemDelegations()` on-chain, covering the transaction gas fee on behalf of the user.
 
-* **Caveat Verification and Settlement**: The DelegationManager contract verifies the user's cryptographic signature, enforces all attached caveats, and executes the deposit on the MultiVault contract, crediting vault shares directly to the user's account.
+* **Caveat Verification and Settlement**: The DelegationManager contract verifies the user's cryptographic signature, enforces all attached caveats, and executes the `deposit` or `redeem` on the MultiVault contract, crediting shares (or the withdrawn TRUST) directly to the user's account.
 
 ![Per-action flow: user click, relayer redeems the delegation through the DelegationManager, MultiVault credits shares to the user](./assets/user_flow.svg)
 
@@ -111,7 +113,7 @@ Let's initialize our Next.js project and install everything we need.
 ```bash
 npx create-next-app@latest intuition-claim-feed
 cd intuition-claim-feed
-npm install viem @metamask/smart-accounts-kit @0xintuition/protocol @tanstack/react-query graphql-request
+npm install viem @metamask/smart-accounts-kit @tanstack/react-query
 ```
 
 ### Environment Variables
@@ -145,10 +147,12 @@ export const MULTIVAULT: Address = '0x6E35cF57A41fA15eA0EaE9C33e751b01A784Fe7e';
 // The MetaMask Delegation Manager on Intuition Mainnet
 export const DELEGATION_MANAGER: Address = '0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3';
 
-// The function signature for staking in the MultiVault
+// The two MultiVault calls the relayer is allowed to make. Both take the
+// receiver as their first argument, so one calldata offset pins it for either.
 export const DEPOSIT_SIG = 'deposit(address,bytes32,uint256,uint256)';
+export const REDEEM_SIG = 'redeem(address,bytes32,uint256,uint256,uint256)';
 
-// Byte offsets for pinning specific arguments inside the deposit calldata
+// Byte offsets for pinning specific arguments inside the calldata
 export const DEPOSIT_OFFSET = {
   receiver: 4,   // First argument after the 4-byte function selector
 };
@@ -165,7 +169,7 @@ export const BUDGET_PERIOD_SECONDS = 86_400; // 1 day
 export const BUDGET_START_BACKDATE_SECONDS = 3_600; // 1 hour
 ```
 
-> The real `src/lib/constants.ts` in the repo also exports `multiVaultAbi` and an `ApprovalType` map used by the hook below - grab it from the repo so the imports resolve.
+> The real `src/lib/constants.ts` in the repo also exports `multiVaultAbi` (with `deposit`, `redeem`, `previewDeposit`, `previewRedeem`, `getShares`, `approve`) and an `ApprovalType` map (`NONE`/`DEPOSIT`/`REDEMPTION`/`BOTH`) used below - grab it from the repo so the imports resolve.
 
 ---
 
@@ -402,10 +406,10 @@ This is the core of the tutorial. We will build both the UI and the delegation l
 
 Rather than one big "Enable" button that fires four wallet prompts in a row, we walk the user through the setup **one step at a time** — each step is its own action with its own explainer, and the wizard only advances once the previous step confirms. The four steps are:
 
-1. **Deploy the HSA** - Calculate the user's deterministic Hybrid Smart Account address and, if it isn't deployed on-chain yet, deploy it (an ERC-7702 upgrade of their own EOA — same address, no funds moved). One-time.
+1. **Deploy the HSA** - Calculate the user's deterministic Hybrid Smart Account address and, if it isn't deployed on-chain yet, deploy it (an ERC-7702 upgrade of their own EOA — same address, *same key still in control*, no funds moved). One-time.
 2. **Fund the HSA** - Transfer TRUST from the user's main wallet to the HSA. This is the staking balance every delegated deposit is drawn from; the per-day cap in the delegation limits how fast it can be drawn down. The user can top up the HSA address anytime to extend the runway. (Gas is paid by the relayer, separately.)
-3. **Approve the MultiVault** - The user's EOA calls `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This authorizes the HSA to submit `deposit(receiver = EOA, ...)` calls into Atom and Triple vaults so the resulting shares are credited to the user's own address. The MultiVault rejects deposits where `receiver != sender` without this approval - it never moves the HSA's funds itself; the HSA sends the deposit and the MultiVault just allows the EOA as the beneficiary.
-4. **Sign the delegation** - Build the scoped delegation object with all its Caveat Enforcers (including the per-day spend cap) and ask the user for one off-chain signature. Save it to `localStorage` so the feed reuses it for every future stake with no more prompts.
+3. **Approve the MultiVault** - The user's EOA calls `multiVault.approve(HSA, ApprovalType.BOTH)`. This authorizes the HSA to submit `deposit` *and* `redeem` calls (with `receiver = EOA`) into Atom and Triple vaults, so shares — and any withdrawn TRUST — are credited to the user's own address. The MultiVault rejects `deposit`/`redeem` where `receiver != sender` without this approval - it never moves the HSA's funds itself; the HSA sends the call and the MultiVault just allows the EOA as the beneficiary.
+4. **Sign the delegation** - Build the scoped delegation (`from: HSA`, `to: relayer`, plus caveats: deposit + redeem selectors, receiver pinned to the user, the per-day cap, an expiry) and ask the user for one off-chain signature. Because the user's key owns the HSA, that signature *is* the HSA granting the permission. Save it to `localStorage` so the feed reuses it for every future op with no more prompts. (See [What is the user actually signing in step 4?](#the-delegation-hook) below - it's the subtlest part of the flow.)
 
 We track how far the user has got with a small `{ deployed, funded, approved }` record in `localStorage`, plus an on-chain `isDeployed()` check so a returning user resumes at the right step. Step 4 is "done" once a signed delegation exists.
 
@@ -441,9 +445,21 @@ function formatCountdown(secondsLeft: number): string {
 export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDelegation> }) {
   const { address } = useWallet();
   const {
-    smartAccount, delegation, error, busyStep, isBusy, wizard,
-    deployHsa, fundHsa, approveMultiVault, signDelegation, revokeDelegation,
-    hsaBalance, dailyCap, periodAvailable, periodResetsAt,
+    smartAccount,
+    delegation,
+    error,
+    busyStep,
+    isBusy,
+    wizard,
+    deployHsa,
+    fundHsa,
+    approveMultiVault,
+    signDelegation,
+    revokeDelegation,
+    hsaBalance,
+    dailyCap,
+    periodAvailable,
+    periodResetsAt,
   } = state;
   const [fundAmount, setFundAmount] = useState('5');
   const [cap, setCap] = useState('1');
@@ -463,11 +479,14 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
   const explorerBase = intuitionMainnet.blockExplorers?.default.url;
 
   let capWei = BigInt(0);
-  try { capWei = parseEther(dailyCap || '0'); } catch {}
+  try {
+    capWei = parseEther(dailyCap || '0');
+  } catch {}
   const availableWei = periodAvailable ?? capWei;
-  const allowancePct = capWei > BigInt(0)
-    ? Math.min(100, Math.max(0, Number((availableWei * BigInt(10000)) / capWei) / 100))
-    : 0;
+  const allowancePct =
+    capWei > BigInt(0)
+      ? Math.min(100, Math.max(0, Number((availableWei * BigInt(10000)) / capWei) / 100))
+      : 0;
   const resetsInSeconds = periodResetsAt && nowSec ? periodResetsAt - nowSec : null;
 
   // First step that isn't done yet.
@@ -478,12 +497,13 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
     if (step.key === 'deploy') deployHsa();
     else if (step.key === 'fund') fundHsa(fundAmount);
     else if (step.key === 'approve') approveMultiVault();
-    else signDelegation(cap, 100);
+    else signDelegation(cap, 500);
   };
 
   const stepBusy = busyStep === step.key;
   const stepDisabled =
-    isBusy || !smartAccount ||
+    isBusy ||
+    !smartAccount ||
     (step.key === 'fund' && Number(fundAmount) <= 0) ||
     (step.key === 'sign' && Number(cap) <= 0);
 
@@ -504,8 +524,12 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
         {copied ? 'Copied' : 'Copy'}
       </button>
       {explorerBase && (
-        <a href={`${explorerBase}/address/${hsaAddress}`} target="_blank" rel="noopener noreferrer"
-          className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10">
+        <a
+          href={`${explorerBase}/address/${hsaAddress}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10"
+        >
           Explorer &#8599;
         </a>
       )}
@@ -536,17 +560,22 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
       {/* One-step-at-a-time wizard */}
       {!delegation && (
         <div className="mt-5 border-t border-white/10 pt-5">
+          {/* progress rail */}
           <div className="flex items-center gap-2 mb-5">
             {SETUP_STEPS.map((s, i) => {
               const done = i < currentIndex;
               const active = i === currentIndex;
               return (
                 <div key={s.key} className="flex items-center gap-2 flex-1 last:flex-none">
-                  <span className={`shrink-0 w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold ${
-                    done ? 'bg-green-500 border-green-500 text-black'
-                      : active ? 'border-white text-white'
-                      : 'border-white/25 text-white/40'
-                  }`}>
+                  <span
+                    className={`shrink-0 w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold ${
+                      done
+                        ? 'bg-green-500 border-green-500 text-black'
+                        : active
+                          ? 'border-white text-white'
+                          : 'border-white/25 text-white/40'
+                    }`}
+                  >
                     {done ? '✓' : i + 1}
                   </span>
                   {i < SETUP_STEPS.length - 1 && (
@@ -566,9 +595,13 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
             {step.docUrl && (
               <>
                 {' '}
-                <a href={step.docUrl} target="_blank" rel="noopener noreferrer"
-                  className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap">
-                  view the source ↗
+                <a
+                  href={step.docUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap"
+                >
+                  {step.docLabel ?? 'reference ↗'}
                 </a>
               </>
             )}
@@ -579,9 +612,15 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
               <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
                 Amount
                 <div className="flex items-center gap-1 mt-1">
-                  <input type="number" value={fundAmount} onChange={(e) => setFundAmount(e.target.value)}
-                    disabled={isBusy} min="0" step="any"
-                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50" />
+                  <input
+                    type="number"
+                    value={fundAmount}
+                    onChange={(e) => setFundAmount(e.target.value)}
+                    disabled={isBusy}
+                    min="0"
+                    step="any"
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
+                  />
                   <span className="text-white/60 text-xs">TRUST</span>
                 </div>
               </label>
@@ -590,9 +629,15 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
               <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
                 Daily limit
                 <div className="flex items-center gap-1 mt-1">
-                  <input type="number" value={cap} onChange={(e) => setCap(e.target.value)}
-                    disabled={isBusy} min="0" step="any"
-                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50" />
+                  <input
+                    type="number"
+                    value={cap}
+                    onChange={(e) => setCap(e.target.value)}
+                    disabled={isBusy}
+                    min="0"
+                    step="any"
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
+                  />
                   <span className="text-white/60 text-xs">TRUST / day</span>
                 </div>
               </label>
@@ -634,12 +679,19 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
               <div className="text-xs text-green-300/70 uppercase tracking-widest mb-1">Hybrid Smart Account</div>
               <div className="flex items-center gap-2 flex-wrap">
                 <code className="text-xs text-green-200 break-all font-mono">{hsaAddress}</code>
-                <button onClick={copyHsa} className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10">
+                <button
+                  onClick={copyHsa}
+                  className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10"
+                >
                   {copied ? 'Copied' : 'Copy'}
                 </button>
                 {explorerBase && (
-                  <a href={`${explorerBase}/address/${hsaAddress}`} target="_blank" rel="noopener noreferrer"
-                    className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10">
+                  <a
+                    href={`${explorerBase}/address/${hsaAddress}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10"
+                  >
                     Explorer &#8599;
                   </a>
                 )}
@@ -664,7 +716,10 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
                 </span>
               </div>
               <div className="w-full bg-black/50 h-2 rounded-full overflow-hidden">
-                <div className="bg-green-500 h-full transition-all duration-500" style={{ width: `${allowancePct}%` }}></div>
+                <div
+                  className="bg-green-500 h-full transition-all duration-500"
+                  style={{ width: `${allowancePct}%` }}
+                ></div>
               </div>
             </div>
           )}
@@ -684,7 +739,7 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
 
 ### The App Shell
 
-`UpgradeAccount` takes its state as a prop so that **one** `useAdminDelegation()` instance can be shared with the code that gates the feed. Create `src/components/AppShell.tsx`:
+`UpgradeAccount` takes its state as a prop so that **one** `useAdminDelegation()` instance can be shared with the code that gates the feed. The App Shell also wraps everything in a `TxLogProvider` and mounts the `TxLogPanel` (both built in [The Activity Log](#the-activity-log) below). Create `src/components/AppShell.tsx`:
 
 ```tsx
 // src/components/AppShell.tsx
@@ -692,19 +747,21 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
 
 import { useWallet } from '@/lib/WalletContext';
 import { useAdminDelegation } from '@/hooks/useAdminDelegation';
+import { TxLogProvider } from '@/lib/TxLogContext';
 import { UpgradeAccount } from './UpgradeAccount';
 import { ClaimFeed } from './ClaimFeed';
+import { TxLogPanel } from './TxLogPanel';
 
 export function AppShell() {
   const { address } = useWallet();
   const delegationState = useAdminDelegation();
 
   return (
-    <>
+    <TxLogProvider>
       <UpgradeAccount state={delegationState} />
 
       {address && delegationState.delegation ? (
-        <div className="mt-20">
+        <div className="mt-20 pb-16">
           <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">
             Activity Feed
           </h2>
@@ -715,7 +772,9 @@ export function AppShell() {
           {address ? 'Complete delegated staking setup to open the claim feed' : 'Connect your wallet to get started'}
         </p>
       )}
-    </>
+
+      <TxLogPanel />
+    </TxLogProvider>
   );
 }
 ```
@@ -728,11 +787,25 @@ Now create `src/hooks/useAdminDelegation.ts`. This is where all the logic lives.
 
 **What does approving the MultiVault actually do?**
 
-`approveMultiVault` has the user's EOA call `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This is easy to misread as "letting the MultiVault move the HSA's money" - it is the opposite. The MultiVault tracks share ownership per address, and by default it only lets an address open or add to an Atom/Triple position for *itself* (`receiver == msg.sender`). When the relayer redeems the delegation, the **HSA** is the account calling `deposit(...)`, but we pin the `receiver` argument to the user's **EOA** so the shares land in the user's own wallet, never the HSA. That cross-address deposit is exactly what `ApprovalType.DEPOSIT` unlocks - it tells the MultiVault "the HSA is allowed to deposit on my behalf." (See the [`approve` function](https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373) - it just writes `approvals[receiver][sender]`.) Revoking flips the same approval back to `ApprovalType.NONE`.
+`approveMultiVault` has the user's EOA call `multiVault.approve(HSA, ApprovalType.BOTH)`. This is easy to misread as "letting the MultiVault move the HSA's money" - it is the opposite. The MultiVault tracks share ownership per address, and by default it only lets an address open, add to, or redeem an Atom/Triple position for *itself* (`receiver == msg.sender`). When the relayer redeems the delegation, the **HSA** is the account calling `deposit(...)` / `redeem(...)`, but we pin the `receiver` argument to the user's **EOA** so shares — and any withdrawn TRUST — land in the user's own wallet, never the HSA. That cross-address access is exactly what the approval unlocks. (See the [`approve` function](https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373) - it just writes `approvals[receiver][sender]`.) Revoking flips it back to `ApprovalType.NONE`.
 
 **`DEPOSIT` vs `REDEMPTION` vs `BOTH`**
 
-The approval is a bitfield: `DEPOSIT` (`0b01`) gates `deposit()`, `REDEMPTION` (`0b10`) gates `redeem()`, and `BOTH` (`0b11`) is both. We only grant `DEPOSIT` because this relayer only ever *stakes*. If you were building a delegate that also needs to **exit** positions on the user's behalf - an auto-unstaker, a rebalancer, a "sell my position" button - you would grant `REDEMPTION` (or `BOTH`) and add a caveat allowing the `redeem` selector alongside `deposit`. Redemption is still safe to delegate: `redeem()` always sends the withdrawn TRUST to the `receiver` (the user), never to whoever submitted the call - so a redemption-approved agent can convert your shares back to TRUST in your own wallet, but can't route them anywhere else. We keep it off here purely on least-privilege grounds: the demo never needs it.
+The approval is a bitfield: `DEPOSIT` (`0b01`) gates `deposit()`, `REDEMPTION` (`0b10`) gates `redeem()`, and `BOTH` (`0b11`) is both. This app's feed lets a user open a position, withdraw it, or switch sides (withdraw + re-stake), so the relayer needs both calls - hence `BOTH`, paired with an `AllowedMethods` caveat that permits *only* the `deposit` and `redeem` selectors. A stake-only relayer would grant `DEPOSIT` alone; that's the right default when you don't need the exit path. Redemption is still safe to delegate: `redeem()` always sends the withdrawn TRUST to the `receiver` (the user), never to whoever submitted the call - so a redemption-approved agent can convert your shares back to TRUST in your own wallet, but can't route them anywhere else.
+
+**What is the user actually signing in step 4? (the subtle one)**
+
+This is the part most people trip on, so it's worth being explicit. Three addresses are in play, and two of them are the *same address*:
+
+* The **EOA** - the user's plain wallet, controlled by their MetaMask private key.
+* The **HSA** - after step 1, the EOA's address also has smart-account code (ERC-7702). It's the *same address*, and the *same private key still controls it* - the EOA is the HSA's owner.
+* The **relayer** - our Admin Wallet (`ADMIN_DELEGATEE`), a completely separate address.
+
+`createDelegation({ from: HSA, to: ADMIN_DELEGATEE, scope, caveats })` builds a permission object that says *"the HSA authorizes the relayer to execute these specific calls."* The user signs it with MetaMask - and because their key **is** the HSA's owner, that signature counts as the HSA granting the permission. No transaction, no gas; the signed blob just goes to `localStorage`.
+
+Later, for every click, the relayer calls `DelegationManager.redeemDelegations(thisDelegation, [oneExecution])`. The DelegationManager verifies the HSA's signature, runs the execution's `target` / `value` / `calldata` through every caveat (`AllowedTargets` = MultiVault, `AllowedMethods` = `deposit`/`redeem`, `AllowedCalldata` = receiver is the EOA, `NativeTokenPeriodTransfer` = under the daily cap, `Timestamp` = not expired), and only then forwards the call **as the HSA**. So the MultiVault sees `msg.sender == HSA` spending the HSA's balance, with `receiver == EOA` - which is why step 3's `approve(HSA, BOTH)` was needed, and why the caveat pins the receiver.
+
+Net: the user signs *once*, the relayer can act *many times*, but only ever `deposit`/`redeem` on the MultiVault, only crediting the user, only within the cap, only for 30 days.
 
 **Why four separate steps instead of one button?**
 
@@ -744,9 +817,11 @@ The first version of this hook used a `NativeTokenTransferAmount` scope - one fi
 
 One gotcha: the enforcer refuses any transfer where `block.timestamp < startDate` (`transfer-not-started`). Intuition's chain clock can trail wall-clock time by a couple of minutes, so if you set `startDate` to "now" the first stake reverts until the chain catches up. We set it to `now - BUDGET_START_BACKDATE_SECONDS` (an hour earlier); the only cost is that the very first window is ~1h shorter.
 
+The period cap only counts **native value out**. A `deposit` sends `msg.value`, so it spends from the cap; a `redeem` moves `value = 0` (the MultiVault pays the user), so withdrawals are free against the cap. That means a user can always withdraw or switch sides even if they've hit their daily deposit limit — the deposit half of a switch is what would be blocked.
+
 **Why do we use `toFunctionSelector`?**
 
-When we attach the `AllowedMethods` caveat, the blockchain requires the exact 4-byte EVM function selector - not a human-readable string. The selector for `deposit(address,bytes32,uint256,uint256)` is `0xcef6d209`. If you pass the raw string instead, the Delegation Manager will silently reject the execution. We use `viem`'s `toFunctionSelector` to generate this correctly.
+When we attach the `AllowedMethods` caveat, the blockchain requires the exact 4-byte EVM function selector - not a human-readable string. We pass both `toFunctionSelector(DEPOSIT_SIG)` and `toFunctionSelector(REDEEM_SIG)`. If you pass a raw string instead, the Delegation Manager will silently reject the execution.
 
 **Why does revoke also sweep the HSA's balance?**
 
@@ -774,7 +849,7 @@ import {
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { getNativeTokenPeriodTransferEnforcerAvailableAmount } from '@metamask/smart-accounts-kit/actions';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS, BUDGET_START_BACKDATE_SECONDS } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, REDEEM_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS, BUDGET_START_BACKDATE_SECONDS } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 // The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
@@ -801,13 +876,16 @@ export const SETUP_STEPS: {
   action: string;
   detail: string;
   docUrl?: string;
+  docLabel?: string;
 }[] = [
   {
     key: 'deploy',
     title: 'Deploy Smart Account',
     action: 'Deploy',
     detail:
-      'An ERC-7702 upgrade gives your existing wallet address smart-account code. Same address, no funds moved. One-time.',
+      'An ERC-7702 upgrade points your wallet address at smart-account (HSA) code. Same address, same key still in control — no funds moved. One-time.',
+    docUrl: 'https://eips.ethereum.org/EIPS/eip-7702',
+    docLabel: 'ERC-7702 ↗',
   },
   {
     key: 'fund',
@@ -821,16 +899,19 @@ export const SETUP_STEPS: {
     title: 'Approve the MultiVault',
     action: 'Approve',
     detail:
-      'One approval on the Intuition MultiVault. approve(HSA, DEPOSIT) lets your smart account deposit into Atom and Triple vaults on your behalf, with the shares credited to your wallet — never the HSA. Without it the MultiVault only lets an address deposit for itself.',
+      'One approval on the Intuition MultiVault. approve(HSA, BOTH) lets your smart account deposit into and redeem from Atom and Triple vaults on your behalf — shares and any withdrawn TRUST always go to your wallet, never the HSA. Without it the MultiVault only lets an address act for itself.',
     docUrl:
       'https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373',
+    docLabel: 'MultiVault.approve() ↗',
   },
   {
     key: 'sign',
     title: 'Sign the delegation',
     action: 'Sign delegation',
     detail:
-      'One off-chain signature — no gas. It authorizes our relayer to submit deposits from your HSA and pay the gas: deposit-only, up to your daily TRUST cap, shares credited to your address, expires in 30 days.',
+      'You sign with your wallet — the same key that owns the smart account, so this is the HSA authorizing it. The delegation is a scoped permission from your HSA to our relayer: it may only call deposit / redeem on the MultiVault, always with you as the receiver, up to your daily TRUST cap, expiring in 30 days. Off-chain, no gas — we store it and reuse it for every click.',
+    docUrl: 'https://eips.ethereum.org/EIPS/eip-7710',
+    docLabel: 'ERC-7710 ↗',
   },
 ];
 
@@ -1109,9 +1190,9 @@ export function useAdminDelegation() {
     }
   };
 
-  // --- Step 3: approve the HSA to deposit on the EOA's behalf ---
-  // multiVault.approve(HSA, DEPOSIT) so the relayer's delegated deposit(receiver
-  // = EOA) calls are accepted and credit shares to the EOA, not the HSA. The
+  // --- Step 3: approve the HSA to deposit / redeem on the EOA's behalf ---
+  // multiVault.approve(HSA, BOTH) so the relayer's delegated deposit/redeem calls
+  // (receiver = EOA) are accepted and always credit the EOA, not the HSA. The
   // MultiVault never moves the HSA's funds itself.
   const approveMultiVault = async () => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
@@ -1128,7 +1209,7 @@ export function useAdminDelegation() {
         data: encodeFunctionData({
           abi: multiVaultAbi,
           functionName: 'approve',
-          args: [smartAccount.address, ApprovalType.DEPOSIT],
+          args: [smartAccount.address, ApprovalType.BOTH],
         }),
         chain: intuitionMainnet,
       });
@@ -1143,7 +1224,7 @@ export function useAdminDelegation() {
   };
 
   // --- Step 4: build + sign the scoped delegation (off-chain, no gas) ---
-  const signDelegation = async (dailyCapTrust: string, maxCalls: number = 100) => {
+  const signDelegation = async (dailyCapTrust: string, maxCalls: number = 500) => {
     if (!smartAccount || !address || !publicClient) {
       setError('Wallet not fully connected or Smart Account not initialized.');
       return;
@@ -1182,8 +1263,9 @@ export function useAdminDelegation() {
           periodDuration: BUDGET_PERIOD_SECONDS,
           startDate: periodStart,
           allowedCalldata: [
-            // Pin the receiver argument so stakes are ALWAYS credited to the user's main wallet.
-            // Notice we do NOT pin the termId here so the admin can stake on any claim for the user.
+            // Pin the receiver argument (first arg of both deposit() and redeem())
+            // so every delegated call credits the user's main wallet. We do NOT
+            // pin the termId, so the relayer can act on any claim for the user.
             {
               startIndex: DEPOSIT_OFFSET.receiver,
               value: encodeAbiParameters([{ type: 'address' }], [address]),
@@ -1192,7 +1274,10 @@ export function useAdminDelegation() {
         },
         caveats: [
           { type: CaveatType.AllowedTargets, targets: [MULTIVAULT] },
-          { type: CaveatType.AllowedMethods, selectors: [toFunctionSelector(DEPOSIT_SIG)] },
+          {
+            type: CaveatType.AllowedMethods,
+            selectors: [toFunctionSelector(DEPOSIT_SIG), toFunctionSelector(REDEEM_SIG)],
+          },
           { type: CaveatType.LimitedCalls, limit: maxCalls },
           { type: CaveatType.Timestamp, afterThreshold: 0, beforeThreshold: expiry },
         ],
@@ -1322,32 +1407,241 @@ export function useAdminDelegation() {
 
 ---
 
+## The Activity Log
+
+A single click in the feed can fire more than one delegated call - switching sides is a `redeem` **then** a `deposit`. To make that legible without cluttering the claim card, every op is recorded in a bottom-docked, expandable panel: the human action, the raw MultiVault call, status, and a link to the transaction. The claim card only ever shows the *current* state; the panel is the history.
+
+It's a small React context plus a presentational component.
+
+```tsx
+// src/lib/TxLogContext.tsx
+'use client';
+
+import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+
+export type TxLogEntry = {
+  id: string;
+  ts: number;
+  kind: 'deposit' | 'redeem';
+  side: 'support' | 'oppose';
+  claim: string;
+  termId: string;
+  status: 'pending' | 'success' | 'error';
+  hash?: string;
+  error?: string;
+};
+
+type NewEntry = Pick<TxLogEntry, 'kind' | 'side' | 'claim' | 'termId'>;
+
+type TxLogValue = {
+  entries: TxLogEntry[];
+  addEntry: (e: NewEntry) => string;
+  updateEntry: (id: string, patch: Partial<TxLogEntry>) => void;
+  clear: () => void;
+};
+
+const TxLogContext = createContext<TxLogValue | null>(null);
+
+export function TxLogProvider({ children }: { children: ReactNode }) {
+  const [entries, setEntries] = useState<TxLogEntry[]>([]);
+
+  const addEntry = useCallback((e: NewEntry) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setEntries((prev) => [{ ...e, id, ts: Date.now(), status: 'pending' }, ...prev]);
+    return id;
+  }, []);
+
+  const updateEntry = useCallback((id: string, patch: Partial<TxLogEntry>) => {
+    setEntries((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
+  }, []);
+
+  const clear = useCallback(() => setEntries([]), []);
+
+  return (
+    <TxLogContext.Provider value={{ entries, addEntry, updateEntry, clear }}>{children}</TxLogContext.Provider>
+  );
+}
+
+export function useTxLog() {
+  const ctx = useContext(TxLogContext);
+  if (!ctx) throw new Error('useTxLog must be used within a TxLogProvider');
+  return ctx;
+}
+
+export const describeEntry = (e: TxLogEntry) =>
+  `${e.kind === 'deposit' ? 'Deposit' : 'Withdraw'} ${e.side === 'support' ? 'Support' : 'Oppose'}`;
+
+export const callSignature = (e: TxLogEntry) =>
+  e.kind === 'deposit'
+    ? 'MultiVault.deposit(receiver, termId, curveId, minShares)'
+    : 'MultiVault.redeem(receiver, termId, curveId, shares, minAssets)';
+```
+
+The panel itself just renders `entries` (newest first) and remembers whether it's open in `localStorage`:
+
+<details>
+<summary>View <code>src/components/TxLogPanel.tsx</code></summary>
+
+```tsx
+// src/components/TxLogPanel.tsx
+'use client';
+
+import { useState } from 'react';
+import { intuitionMainnet } from '@/lib/chains';
+import { useTxLog, describeEntry, callSignature, type TxLogEntry } from '@/lib/TxLogContext';
+
+const STORAGE_KEY = 'intuition_txlog_open';
+const explorerBase = intuitionMainnet.blockExplorers?.default.url;
+
+const readOpen = (): boolean => {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+function StatusDot({ status }: { status: TxLogEntry['status'] }) {
+  const color =
+    status === 'success' ? 'bg-green-500' : status === 'error' ? 'bg-red-500' : 'bg-amber-400 animate-pulse';
+  return <span className={`inline-block w-2 h-2 rounded-full ${color}`} />;
+}
+
+export function TxLogPanel() {
+  const { entries, clear } = useTxLog();
+  const [open, setOpen] = useState(readOpen);
+
+  const toggle = () => {
+    setOpen((v) => {
+      try {
+        localStorage.setItem(STORAGE_KEY, v ? '0' : '1');
+      } catch {}
+      return !v;
+    });
+  };
+
+  if (entries.length === 0) return null;
+
+  const pending = entries.filter((e) => e.status === 'pending').length;
+  const failed = entries.filter((e) => e.status === 'error').length;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-white/15 bg-[#0a0a0a]/95 backdrop-blur">
+      <button
+        onClick={toggle}
+        className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-mono uppercase tracking-widest text-white/60 hover:text-white transition-colors"
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        <span>Delegated activity log</span>
+        <span className="text-white/30">·</span>
+        <span>{entries.length} op{entries.length === 1 ? '' : 's'}</span>
+        {pending > 0 && <span className="text-amber-400">· {pending} pending</span>}
+        {failed > 0 && <span className="text-red-400">· {failed} failed</span>}
+        <span className="ml-auto flex items-center gap-3">
+          {open && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                clear();
+              }}
+              className="text-white/30 hover:text-white/70 normal-case tracking-normal"
+            >
+              clear
+            </span>
+          )}
+        </span>
+      </button>
+
+      {open && (
+        <div className="max-h-[38vh] overflow-y-auto border-t border-white/10 px-4 py-2 text-xs font-mono">
+          {entries.map((e) => (
+            <div key={e.id} className="flex items-start gap-3 py-2 border-b border-white/5 last:border-0">
+              <StatusDot status={e.status} />
+              <span className="text-white/30 shrink-0 w-16">
+                {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-white/80">
+                  {describeEntry(e)} <span className="text-white/35">— {e.claim}</span>
+                </div>
+                <div className="text-white/35 break-all">{callSignature(e)}</div>
+                {e.error && <div className="text-red-400/80 break-words mt-0.5">{e.error}</div>}
+              </div>
+              {e.hash && explorerBase && (
+                <a
+                  href={`${explorerBase}/tx/${e.hash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 text-white/40 hover:text-white uppercase tracking-widest"
+                >
+                  tx ↗
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+</details>
+
+`AppShell` already wraps the tree in `<TxLogProvider>` and renders `<TxLogPanel />` (see [The App Shell](#the-app-shell)).
+
+---
+
 ## The Claim Feed UI
 
 Now let's build the feed that displays all claims from the Intuition Protocol and lets users interact with them.
 
 **What is a Triple?**
 
-On Intuition, every claim is structured as a **Triple**: a Subject, a Predicate, and an Object - three pieces of information linked together, each backed by its own **Atom** on the ledger. Every Triple has two bonding-curve vaults: a *positive* vault for users who agree with the statement and a *counter* vault for users who disagree. Supporting or opposing a claim is just a `deposit` into one of those two vaults - and that `deposit` is the single MultiVault action this app delegates. Creating new Atoms and Triples is out of scope here; this tutorial focuses on the delegated deposit lifecycle against claims that already exist on the protocol.
+On Intuition, every claim is structured as a **Triple**: a Subject, a Predicate, and an Object - three pieces of information linked together, each backed by its own **Atom** on the ledger. Every Triple has two bonding-curve vaults: a *positive* vault for users who agree with the statement and a *counter* vault for users who disagree. Supporting or opposing a claim is a `deposit` into one of those two vaults; withdrawing is a `redeem`. Those two calls are the entire MultiVault surface this app delegates. Creating new Atoms and Triples is out of scope here.
 
 **What is the Intuition GraphQL API?**
 
-Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. There's an `@0xintuition/graphql` SDK with generated hooks, but none of them return *both* the triple metadata (`creator`, `created_at`) *and* the connected wallet's position in each vault at once. So we write one small query of our own and run it with `graphql-request` + `@tanstack/react-query`. The per-wallet positions let us lock a user to one side of a claim: hold a Support position and the Oppose button disables, and vice versa.
+Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. There's an `@0xintuition/graphql` SDK with generated hooks, but none of them return *both* the triple metadata (`creator`, `created_at`) *and* the connected wallet's position in each vault at once. So we run one small query of our own. A GraphQL request is just a `POST` of `{ query, variables }` - no client library needed. Put the helper in `src/lib/graphql.ts`:
 
-Create `src/hooks/useClaimFeed.ts`:
+```ts
+// src/lib/graphql.ts
+export const INTUITION_GRAPHQL_URL = 'https://mainnet.intuition.sh/v1/graphql';
+
+export async function gqlRequest<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  const res = await fetch(INTUITION_GRAPHQL_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+  const json = await res.json();
+  if (Array.isArray(json?.errors) && json.errors.length > 0) {
+    throw new Error(json.errors.map((e: { message?: string }) => e.message ?? 'GraphQL error').join('; '));
+  }
+  if (!res.ok) throw new Error(`GraphQL request failed: ${res.status}`);
+  return json.data as T;
+}
+```
+
+Now `src/hooks/useClaimFeed.ts` wraps that in a `useInfiniteQuery`. The per-wallet positions it returns are what let the feed know which side (if any) the user is on:
 
 ```ts
 // src/hooks/useClaimFeed.ts
 'use client';
 
 import { useInfiniteQuery } from '@tanstack/react-query';
-import { gql } from 'graphql-request';
-import { graphqlClient } from '@/lib/graphql';
+import { gqlRequest } from '@/lib/graphql';
 
 const PAGE_SIZE = 10;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-const CLAIM_FEED_QUERY = gql`
+// One query for everything the feed needs: the triple + its metadata (creator,
+// created_at), the two vaults' totals, and — filtered to the connected wallet —
+// that wallet's position in each vault. The generated `GetTriplesWithPositions`
+// hook has the positions but drops `created_at`/`creator`; the generated
+// `GetTriples` hook is the other way round. So we run our own.
+const CLAIM_FEED_QUERY = /* GraphQL */ `
   query ClaimFeed($limit: Int!, $offset: Int!, $address: String!) {
     triples(limit: $limit, offset: $offset, order_by: { created_at: desc }) {
       term_id
@@ -1373,7 +1667,10 @@ const CLAIM_FEED_QUERY = gql`
   }
 `;
 
-type FeedVault = { total_shares: string | null; positions: { shares: string | null }[] };
+type FeedVault = {
+  total_shares: string | null;
+  positions: { shares: string | null }[];
+};
 
 export type FeedClaim = {
   term_id: `0x${string}`;
@@ -1395,7 +1692,7 @@ export function useClaimFeed(address: string | null) {
     queryKey: ['claim-feed', addr],
     initialPageParam: 0,
     queryFn: ({ pageParam }) =>
-      graphqlClient.request<FeedPage>(CLAIM_FEED_QUERY, {
+      gqlRequest<FeedPage>(CLAIM_FEED_QUERY, {
         limit: PAGE_SIZE,
         offset: pageParam as number,
         address: addr,
@@ -1406,9 +1703,17 @@ export function useClaimFeed(address: string | null) {
 }
 ```
 
-(`graphqlClient` is a one-liner in `src/lib/graphql.ts`: `export const graphqlClient = new GraphQLClient('https://mainnet.intuition.sh/v1/graphql')`.)
 
-Now create `src/components/ClaimFeed.tsx`. We will start with just the feed UI with placeholder handlers for Support and Oppose - then we will wire up the real delegation logic in the next section.
+Now `src/components/ClaimFeed.tsx`. Each card is a **toggle**, driven by `held` (the side the wallet is on, or `null`):
+
+* Click a side you're **not** on, holding nothing &rarr; one `deposit`.
+* Click the side you **are** on &rarr; one `redeem` (withdraw).
+* Click the **other** side &rarr; a `redeem` of the current side, then a `deposit` on the new one.
+
+`act(side)` runs that little state machine, calling `runDelegatedOp` (a thin wrapper over `/api/stake` that logs to the activity panel) once or twice, then applies an optimistic update and schedules a single re-sync from the indexer. An `opSeq` ref makes sure only the *latest* action's re-sync clears the optimistic view, so clicking again during the ~4s indexer lag doesn't flicker.
+
+<details>
+<summary>View <code>src/components/ClaimFeed.tsx</code></summary>
 
 ```tsx
 // src/components/ClaimFeed.tsx
@@ -1416,60 +1721,182 @@ Now create `src/components/ClaimFeed.tsx`. We will start with just the feed UI w
 
 import { useWallet } from '@/lib/WalletContext';
 import { useClaimFeed, type FeedClaim } from '@/hooks/useClaimFeed';
-import { formatUnits } from 'viem';
-import { useState, useRef, useCallback } from 'react';
+import { useTxLog } from '@/lib/TxLogContext';
+import { formatUnits, parseEther } from 'viem';
+import { useRef, useState, useCallback } from 'react';
 
 const PORTAL_TRIPLE_URL = (termId: string) =>
   `https://portal.intuition.systems/explore/triple/${termId}?tab=positions`;
 
-// created_at is an ISO string; guard against a missing/bad value.
-const formatClaimDate = (iso: string | null | undefined) => {
+const STAKE_AMOUNT = parseEther('0.01'); // protocol minimum deposit
+const CURVE_ID = BigInt(1); // default bonding curve
+
+// created_at comes back as an ISO string; guard against a missing/bad value
+// instead of rendering "Invalid Date".
+const formatClaimDate = (iso: string | null | undefined): string => {
   if (!iso) return '';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString();
 };
 
-// The positions list is pre-filtered to the connected address by the query.
-const holdsPosition = (vault: { positions?: { shares?: string | null }[] } | null | undefined) =>
+type VaultWithPositions = { positions?: { shares?: string | null }[] } | null | undefined;
+
+// Does the connected wallet hold shares in this vault? The positions list is
+// pre-filtered to the current address by the GraphQL query.
+const holdsPosition = (vault: VaultWithPositions): boolean =>
   Array.isArray(vault?.positions) &&
   vault.positions.some((p) => {
-    try { return BigInt(p?.shares ?? '0') > BigInt(0); } catch { return false; }
+    try {
+      return BigInt(p?.shares ?? '0') > BigInt(0);
+    } catch {
+      return false;
+    }
   });
+
+const getDelegationKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
+const reviveBigInt = (key: string, value: unknown) =>
+  typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value;
+const bigintReplacer = (key: string, value: unknown) =>
+  typeof value === 'bigint' ? value.toString() + 'n' : value;
+
+type Side = 'support' | 'oppose';
 
 function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }) {
   const { address } = useWallet();
+  const { addEntry, updateEntry } = useTxLog();
   const [isPending, setIsPending] = useState(false);
+  // Optimistic overrides shown until the indexer catches up. `undefined` = use
+  // on-chain state; `null` = optimistically holding nothing.
+  const [optimisticHeld, setOptimisticHeld] = useState<Side | null | undefined>(undefined);
   const [optimisticSupport, setOptimisticSupport] = useState<bigint | null>(null);
   const [optimisticOppose, setOptimisticOppose] = useState<bigint | null>(null);
+  // Only the most recent action's refetch should clear the optimistic view, so
+  // that clicking again during the indexer-lag window doesn't cause flicker.
+  const opSeq = useRef(0);
 
-  const supportShares = optimisticSupport !== null
-    ? optimisticSupport
-    : BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
+  const supportTermId = claim.term_id;
+  const opposeTermId = claim.counter_term_id;
+  const supportBase = BigInt(claim.term?.vaults?.[0]?.total_shares || '0');
+  const opposeBase = BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
+  const supportShares = optimisticSupport ?? supportBase;
+  const opposeShares = optimisticOppose ?? opposeBase;
 
-  const opposeShares = optimisticOppose !== null
-    ? optimisticOppose
-    : BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0');
+  const heldOnChain: Side | null = holdsPosition(claim.term?.vaults?.[0])
+    ? 'support'
+    : holdsPosition(claim.counter_term?.vaults?.[0])
+      ? 'oppose'
+      : null;
+  const held: Side | null = optimisticHeld !== undefined ? optimisticHeld : heldOnChain;
 
-  // One side only: a Support position locks Oppose and vice versa.
-  const hasSupport = holdsPosition(claim.term?.vaults?.[0]) || optimisticSupport !== null;
-  const hasOppose = holdsPosition(claim.counter_term?.vaults?.[0]) || optimisticOppose !== null;
+  const claimLabel =
+    [claim.subject?.label, claim.predicate?.label, claim.object?.label].filter(Boolean).join(' ') || 'claim';
 
-  const handleSupport = async () => {
-    // We will wire this up in the next section
-    console.log('Support clicked for:', claim.term_id);
+  const clearOptimistic = () => {
+    setOptimisticHeld(undefined);
+    setOptimisticSupport(null);
+    setOptimisticOppose(null);
   };
 
-  const handleOppose = async () => {
-    // We will wire this up in the next section
-    console.log('Oppose clicked for:', claim.counter_term_id);
+  // One delegated deposit or redeem, logged to the activity panel.
+  const runDelegatedOp = async (kind: 'deposit' | 'redeem', side: Side, termId: string, delegation: unknown) => {
+    const logId = addEntry({ kind, side, claim: claimLabel, termId });
+    try {
+      const res = await fetch('/api/stake', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          {
+            delegation,
+            action: kind,
+            termId,
+            curveId: CURVE_ID.toString(),
+            assets: kind === 'deposit' ? STAKE_AMOUNT.toString() : undefined,
+            userAddress: address,
+          },
+          bigintReplacer,
+        ),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.details || json.error || `${kind} failed`);
+      updateEntry(logId, { status: 'success', hash: json.hash });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Transaction failed';
+      updateEntry(logId, { status: 'error', error: msg });
+      throw new Error(msg);
+    }
+  };
+
+  const act = async (clicked: Side) => {
+    if (!address || isPending) return;
+    const stored = localStorage.getItem(getDelegationKey(address));
+    const delegation = stored ? JSON.parse(stored, reviveBigInt) : null;
+    if (!delegation) {
+      alert('Enable delegated staking to use the feed.');
+      return;
+    }
+
+    const termFor = (side: Side) => (side === 'support' ? supportTermId : opposeTermId);
+    const baseFor = (side: Side) => (side === 'support' ? supportBase : opposeBase);
+    const setOptimisticFor = (side: Side, v: bigint) =>
+      side === 'support' ? setOptimisticSupport(v) : setOptimisticOppose(v);
+
+    const seq = (opSeq.current += 1);
+    // Re-sync from the indexer once, unless a newer action has since started.
+    const scheduleResync = (delayMs: number) =>
+      setTimeout(() => {
+        if (opSeq.current !== seq) return;
+        refetch();
+        clearOptimistic();
+      }, delayMs);
+
+    setIsPending(true);
+    try {
+      if (held === clicked) {
+        // Toggle off — withdraw the position on this side.
+        await runDelegatedOp('redeem', clicked, termFor(clicked), delegation);
+        setOptimisticHeld(null);
+        setOptimisticFor(clicked, BigInt(0));
+      } else if (held && held !== clicked) {
+        // Switch sides — withdraw the current side, then deposit on the clicked side.
+        await runDelegatedOp('redeem', held, termFor(held), delegation);
+        setOptimisticFor(held, BigInt(0));
+        await runDelegatedOp('deposit', clicked, termFor(clicked), delegation);
+        setOptimisticHeld(clicked);
+        setOptimisticFor(clicked, baseFor(clicked) + STAKE_AMOUNT);
+      } else {
+        // Fresh position — deposit on the clicked side.
+        await runDelegatedOp('deposit', clicked, termFor(clicked), delegation);
+        setOptimisticHeld(clicked);
+        setOptimisticFor(clicked, baseFor(clicked) + STAKE_AMOUNT);
+      }
+      scheduleResync(4000);
+    } catch (e) {
+      console.error(e);
+      alert(e instanceof Error ? e.message : 'Transaction failed');
+      scheduleResync(2000);
+    }
+    setIsPending(false);
   };
 
   const creatorAddress = claim.creator?.id || '0x0000000000000000000000000000000000000000';
   const creatorName = claim.creator?.label || `${creatorAddress.slice(0, 6)}...${creatorAddress.slice(-4)}`;
   const claimDate = formatClaimDate(claim.created_at);
 
+  const supportTitle =
+    held === 'support'
+      ? 'Withdraw your Support position'
+      : held === 'oppose'
+        ? 'Switch sides: withdraw Oppose, then Support'
+        : 'Support this claim (deposit 0.01 TRUST)';
+  const opposeTitle =
+    held === 'oppose'
+      ? 'Withdraw your Oppose position'
+      : held === 'support'
+        ? 'Switch sides: withdraw Support, then Oppose'
+        : 'Oppose this claim (deposit 0.01 TRUST)';
+
   return (
-    <div className="border border-white/10 p-5 bg-[#0a0a0a] mb-6 transition-all hover:bg-[#111] flex space-x-4">
+    <div className="border border-white/10 p-5 bg-[#0a0a0a] mb-6 transition-all hover:bg-[#111] cursor-default flex space-x-4">
       <div className="shrink-0">
         <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center font-mono text-sm text-white/50">
           {creatorAddress.slice(2, 4).toUpperCase()}
@@ -1478,7 +1905,7 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
 
       <div className="flex-1">
         <div className="flex items-center justify-between text-sm mb-1">
-          <span className="font-bold text-white font-mono">{creatorName}</span>
+          <span className="font-bold text-white hover:underline cursor-pointer font-mono">{creatorName}</span>
           <div className="flex items-center space-x-3">
             <a
               href={PORTAL_TRIPLE_URL(claim.term_id)}
@@ -1488,9 +1915,7 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
             >
               Portal ↗
             </a>
-            {claimDate && (
-              <span className="text-white/30 text-xs font-mono tracking-wider">{claimDate}</span>
-            )}
+            {claimDate && <span className="text-white/30 text-xs font-mono tracking-wider">{claimDate}</span>}
           </div>
         </div>
 
@@ -1500,41 +1925,57 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
           <span className="font-medium text-white">{claim.object?.label || 'No description'}</span>
         </div>
 
-        <div className="flex items-center space-x-6 text-sm text-white/50 font-mono">
+        <div className="flex items-center gap-x-6 gap-y-2 flex-wrap text-sm text-white/50 font-mono">
           <button
-            onClick={handleSupport}
-            disabled={isPending || optimisticSupport !== null || hasOppose}
-            title={hasOppose ? 'You hold an Oppose position on this claim' : undefined}
-            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed group"
+            onClick={() => act('support')}
+            disabled={isPending}
+            title={supportTitle}
+            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-wait group"
           >
-            <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
-              SUPPORT
+            <span
+              className={`border px-2 py-0.5 rounded-full whitespace-nowrap transition-all ${
+                held === 'support'
+                  ? 'border-green-500 bg-green-500/15 text-green-300'
+                  : 'border-white/20 group-hover:bg-white group-hover:text-black'
+              }`}
+            >
+              {held === 'support' ? '↑ SUPPORTING' : '↑ SUPPORT'}
             </span>
-            <span className={hasSupport ? 'text-green-400 font-bold' : ''}>
+            <span className={held === 'support' ? 'text-green-400 font-bold' : ''}>
               {Number(formatUnits(supportShares, 18)).toFixed(4)}
             </span>
           </button>
 
           <button
-            onClick={handleOppose}
-            disabled={isPending || optimisticOppose !== null || hasSupport}
-            title={hasSupport ? 'You hold a Support position on this claim' : undefined}
-            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed group"
+            onClick={() => act('oppose')}
+            disabled={isPending}
+            title={opposeTitle}
+            className="flex items-center space-x-2 hover:text-white transition-colors disabled:opacity-40 disabled:cursor-wait group"
           >
-            <span className="group-hover:bg-white group-hover:text-black border border-white/20 px-2 py-0.5 rounded-full transition-all">
-              OPPOSE
+            <span
+              className={`border px-2 py-0.5 rounded-full whitespace-nowrap transition-all ${
+                held === 'oppose'
+                  ? 'border-red-500 bg-red-500/15 text-red-300'
+                  : 'border-white/20 group-hover:bg-white group-hover:text-black'
+              }`}
+            >
+              {held === 'oppose' ? '↓ OPPOSING' : '↓ OPPOSE'}
             </span>
-            <span className={hasOppose ? 'text-red-400 font-bold' : ''}>
+            <span className={held === 'oppose' ? 'text-red-400 font-bold' : ''}>
               {Number(formatUnits(opposeShares, 18)).toFixed(4)}
             </span>
           </button>
-
-          {(hasSupport || hasOppose) && (
-            <span className={`text-[10px] uppercase tracking-widest ${hasSupport ? 'text-green-400/70' : 'text-red-400/70'}`}>
-              Your position: {hasSupport ? 'Support' : 'Oppose'}
-            </span>
-          )}
         </div>
+
+        {held && (
+          <p className="mt-2 text-[10px] uppercase tracking-widest text-white/35">
+            You{' '}
+            <span className={held === 'support' ? 'text-green-400/80' : 'text-red-400/80'}>
+              {held === 'support' ? 'support' : 'oppose'}
+            </span>{' '}
+            this &mdash; click {held === 'support' ? 'Supporting' : 'Opposing'} to withdraw, or the other side to switch
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1545,20 +1986,45 @@ export function ClaimFeed() {
   const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useClaimFeed(address);
 
-  // Infinite scroll using IntersectionObserver
   const observerRef = useRef<IntersectionObserver | null>(null);
-  const loadMoreRef = useCallback((node: HTMLDivElement | null) => {
-    if (isLoading || isFetchingNextPage) return;
-    if (observerRef.current) observerRef.current.disconnect();
-    observerRef.current = new IntersectionObserver((entries) => {
-      if (entries[0].isIntersecting && hasNextPage) fetchNextPage();
-    });
-    if (node) observerRef.current.observe(node);
-  }, [isLoading, isFetchingNextPage, hasNextPage, fetchNextPage]);
+  const loadMoreRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (isLoading || isFetchingNextPage) return;
+      if (observerRef.current) observerRef.current.disconnect();
 
-  if (isLoading && !data) return <div className="text-white/50 font-mono text-sm animate-pulse">Loading feed...</div>;
-  if (error) return <div className="text-red-500 font-mono">ERROR: {error.message}</div>;
-  if (!data?.pages[0]?.triples?.length) return <div className="text-white/50 text-center py-8 font-mono text-sm uppercase">No claims found. Be the first.</div>;
+      observerRef.current = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting && hasNextPage) {
+          fetchNextPage();
+        }
+      });
+      if (node) observerRef.current.observe(node);
+    },
+    [isLoading, isFetchingNextPage, hasNextPage, fetchNextPage],
+  );
+
+  if (isLoading && !data)
+    return (
+      <div className="animate-pulse flex space-x-4">
+        <div className="flex-1 space-y-6 py-1">
+          <div className="h-2 bg-white/20 rounded"></div>
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="h-2 bg-white/20 rounded col-span-2"></div>
+              <div className="h-2 bg-white/20 rounded col-span-1"></div>
+            </div>
+            <div className="h-2 bg-white/20 rounded"></div>
+          </div>
+        </div>
+      </div>
+    );
+  if (error)
+    return <div className="text-red-500 font-mono">ERROR: {error instanceof Error ? error.message : 'An error occurred'}</div>;
+  if (!data?.pages[0]?.triples?.length)
+    return (
+      <div className="text-white/50 text-center py-8 font-mono tracking-widest text-sm uppercase">
+        NO CLAIMS FOUND. BE THE FIRST.
+      </div>
+    );
 
   return (
     <div className="space-y-4">
@@ -1571,35 +2037,42 @@ export function ClaimFeed() {
       ))}
 
       <div ref={loadMoreRef} className="py-4 text-center">
-        {isFetchingNextPage && <div className="text-white/50 font-mono text-xs uppercase tracking-widest animate-pulse">Loading more...</div>}
-        {!hasNextPage && data.pages.length > 0 && <div className="text-white/30 font-mono text-xs uppercase tracking-widest">End of feed</div>}
+        {isFetchingNextPage && (
+          <div className="text-white/50 font-mono text-xs uppercase tracking-widest animate-pulse">
+            Loading older claims...
+          </div>
+        )}
+        {!hasNextPage && data.pages.length > 0 && (
+          <div className="text-white/30 font-mono text-xs uppercase tracking-widest">End of feed</div>
+        )}
       </div>
     </div>
   );
 }
 ```
+</details>
 
-At this point, your feed will load and display all claims correctly. The Support and Oppose buttons will just log to the console. In the next section, we wire them up to the actual delegation.
+The `/api/stake` route that `runDelegatedOp` posts to is built next - it now takes an `action` of `deposit` or `redeem`.
 
 
 ---
 
 ## Integrating Delegation Redemption
 
-Now we complete the loop. We will update the `handleSupport` and `handleOppose` functions in `ClaimFeed.tsx` to check localStorage for a saved delegation. If one exists, we route the stake through our backend API. If not, we fall back to a standard MetaMask popup.
+Now the backend. `runDelegatedOp` in the feed posts `{ delegation, action, termId, curveId, userAddress, assets? }` to `/api/stake` for each op; the route redeems the delegation on-chain and pays the gas.
 
 ### The Backend Relayer
 
-First, we need to build the API route. Create `src/app/api/stake/route.ts`.
+Create `src/app/api/stake/route.ts`. This runs on the server, where the Admin Wallet key lives. Given a delegation and a claim's term id, it:
 
-This runs on the server and is where our Admin Wallet lives. When the frontend calls it with a delegation and a claim's term ID, it:
+1. Revives the `BigInt` values that were serialized to `"...n"` strings in JSON.
+2. **For `deposit`:** previews the deposit for a `minShares` (1% slippage), encodes `deposit(receiver, termId, curveId, minShares)`, sets the execution `value` to the stake amount.
+3. **For `redeem`:** reads the user's full position with `getShares`, previews it for a `minAssets` (1% slippage), encodes `redeem(receiver, termId, curveId, shares, minAssets)`, leaves `value` at `0`.
+4. Wraps the execution in `DelegationManager.redeemDelegations(...)`.
+5. Dry-runs it with `publicClient.call` to surface a revert reason before spending gas.
+6. Broadcasts and returns `{ hash, action }`.
 
-1. Revives the `BigInt` values that were serialized to strings in JSON
-2. Previews the deposit to calculate the minimum acceptable shares (slippage protection)
-3. Encodes the `deposit` call for the Intuition MultiVault
-4. Wraps everything in a `redeemDelegations` call to the Delegation Manager
-5. Dry-runs the transaction to catch revert reasons before broadcasting
-6. Broadcasts the transaction and returns the hash
+The `receiver` argument is always the user's address - it has to match the pin in the delegation's `allowedCalldata` caveat, and `redeem` sends the withdrawn TRUST straight there.
 
 ```ts
 // src/app/api/stake/route.ts
@@ -1614,15 +2087,26 @@ import { createExecution, ExecutionMode } from '@metamask/smart-accounts-kit';
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
-
     // BigInt values in the delegation were serialized as strings ending in "n".
-    // We revive them back to BigInts before using them.
-    const { delegation, termId, curveId, assets, userAddress } = JSON.parse(rawBody, (key, value) =>
+    const {
+      delegation,
+      termId,
+      curveId,
+      assets,
+      userAddress,
+      action = 'deposit',
+    } = JSON.parse(rawBody, (key, value) =>
       typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value
     );
 
-    if (!delegation || !termId || curveId === undefined || !assets || !userAddress) {
+    if (!delegation || !termId || curveId === undefined || !userAddress) {
       return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
+    }
+    if (action !== 'deposit' && action !== 'redeem') {
+      return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+    }
+    if (action === 'deposit' && !assets) {
+      return NextResponse.json({ error: 'Missing assets for deposit' }, { status: 400 });
     }
 
     const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
@@ -1634,176 +2118,95 @@ export async function POST(req: NextRequest) {
     const publicClient = createPublicClient({ chain: intuitionMainnet, transport: http() });
     const walletClient = createWalletClient({ account: adminAccount, chain: intuitionMainnet, transport: http() });
 
-    // Step 1: Preview the deposit to calculate minimum acceptable shares (1% slippage)
-    const [shares] = await publicClient.readContract({
-      address: MULTIVAULT,
-      abi: multiVaultAbi,
-      functionName: 'previewDeposit',
-      args: [termId, BigInt(curveId), BigInt(assets)],
-    });
-    const minShares = (shares * 99n) / 100n;
+    const cid = BigInt(curveId);
+    let callData: `0x${string}`;
+    let value = BigInt(0);
 
-    // Step 2: Encode the MultiVault deposit call
-    const callData = encodeFunctionData({
-      abi: multiVaultAbi,
-      functionName: 'deposit',
-      // IMPORTANT: The receiver must match the address pinned in the delegation's caveats
-      args: [userAddress, termId, BigInt(curveId), minShares],
-    });
+    if (action === 'deposit') {
+      // minShares with 1% slippage tolerance
+      const [shares] = await publicClient.readContract({
+        address: MULTIVAULT,
+        abi: multiVaultAbi,
+        functionName: 'previewDeposit',
+        args: [termId, cid, BigInt(assets)],
+      });
+      const minShares = (shares * 99n) / 100n;
+      // The receiver MUST match the address pinned in the delegation's caveats.
+      callData = encodeFunctionData({
+        abi: multiVaultAbi,
+        functionName: 'deposit',
+        args: [userAddress, termId, cid, minShares],
+      });
+      value = BigInt(assets);
+    } else {
+      // redeem: close the user's whole position on this term
+      const shares = await publicClient.readContract({
+        address: MULTIVAULT,
+        abi: multiVaultAbi,
+        functionName: 'getShares',
+        args: [userAddress, termId, cid],
+      });
+      if (shares === 0n) {
+        return NextResponse.json({ error: 'No position to withdraw on this term' }, { status: 400 });
+      }
+      const [assetsAfterFees] = await publicClient.readContract({
+        address: MULTIVAULT,
+        abi: multiVaultAbi,
+        functionName: 'previewRedeem',
+        args: [termId, cid, shares],
+      });
+      const minAssets = (assetsAfterFees * 99n) / 100n;
+      // redeem() sends the withdrawn TRUST to the receiver (the user), never the caller.
+      callData = encodeFunctionData({
+        abi: multiVaultAbi,
+        functionName: 'redeem',
+        args: [userAddress, termId, cid, shares, minAssets],
+      });
+      // value stays 0 — a redemption doesn't touch the delegation's TRUST cap.
+    }
 
-    // Step 3: Encode the DelegationManager redeemDelegations call
+    // Encode the DelegationManager redeem call
     const target = DELEGATION_MANAGER;
     const data = DelegationManager.encode.redeemDelegations({
       delegations: [[delegation]],
       modes: [ExecutionMode.SingleDefault],
-      executions: [[createExecution({ target: MULTIVAULT, value: BigInt(assets), callData })]],
+      executions: [[createExecution({ target: MULTIVAULT, value, callData })]],
     });
 
-    // Step 4: Dry-run to catch revert reasons before spending gas
+    // Dry-run to surface revert reasons before spending gas
     try {
       await publicClient.call({ account: adminAccount.address, to: target, data });
-    } catch (simErr: any) {
+    } catch (simErr: unknown) {
       console.error('Simulation failed:', simErr);
-      return NextResponse.json({
-        error: 'Transaction simulation failed',
-        details: simErr.shortMessage ?? simErr.message,
-      }, { status: 400 });
+      const e = simErr as { shortMessage?: string; message?: string };
+      return NextResponse.json(
+        { error: 'Transaction simulation failed', details: e.shortMessage ?? e.message },
+        { status: 400 },
+      );
     }
 
-    // Step 5: Broadcast the transaction
     const hash = await walletClient.sendTransaction({ to: target, data });
-
-    // Return the hash immediately for a fast UI response
-    return NextResponse.json({ success: true, hash });
-
-  } catch (error: any) {
+    return NextResponse.json({ success: true, hash, action });
+  } catch (error: unknown) {
     console.error('API Stake Error:', error);
-    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 ```
 
-### Wiring Up the Feed Buttons
+### The `act()` state machine
 
-Now update the `handleSupport` and `handleOppose` functions inside `ClaimFeed.tsx`. Replace the placeholder `console.log` calls with the real delegation logic:
+`ClaimFeed.tsx` (shown in full above) drives everything from `act(clicked)`:
 
-```tsx
-// src/components/ClaimFeed.tsx (updated handlers only)
-
-const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
-const reviveBigInt = (key: string, value: any) =>
-  typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value;
-
-// Inside ClaimItem, replace handleSupport with:
-const handleSupport = async () => {
-  if (!address || !walletClient || !publicClient) return;
-  setIsPending(true);
-  try {
-    const stored = localStorage.getItem(getStorageKey(address));
-    const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
-
-    if (currentDelegation) {
-      // Delegated path: route through the backend relayer
-      const res = await fetch('/api/stake', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          delegation: currentDelegation,
-          termId: claim.term_id,
-          curveId: BigInt(1).toString(),
-          assets: parseEther('0.01').toString(), // Must meet the 0.01 TRUST protocol minimum
-          userAddress: address,
-        }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.details || err.error || 'Failed to stake via relayer');
-      }
-    } else {
-      // Standard fallback: MetaMask popup
-      const patchedWalletClient = { ...walletClient, account: address };
-      await multiVaultDeposit(
-        { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient },
-        {
-          args: [address, claim.term_id, BigInt(1), BigInt(0)],
-          value: parseEther('0.01'),
-        }
-      );
-    }
-
-    // Optimistic UI update - show the stake immediately before the indexer catches up
-    setOptimisticSupport(BigInt(claim.term?.vaults?.[0]?.total_shares || '0') + parseEther('0.01'));
-    setTimeout(async () => {
-      await refetch();
-      setOptimisticSupport(null);
-    }, 4000);
-
-  } catch (e: any) {
-    console.error(e);
-    alert(e.message || 'Transaction failed');
-  }
-  setIsPending(false);
-};
+```
+held === clicked        -> redeem(clicked)                    // withdraw
+held && held !== clicked -> redeem(held); deposit(clicked)    // switch sides
+held == null             -> deposit(clicked)                  // open a position
 ```
 
-Here is the full `handleOppose` implementation - the same pattern but targeting `claim.counter_term_id`:
+Each `runDelegatedOp` call adds a `pending` row to the activity log, `POST`s to `/api/stake`, and flips the row to `success` (with the tx hash) or `error` (with the revert reason). If the first op of a switch fails, the second never runs and the log shows exactly where it stopped. After the op(s), an optimistic update paints the new state immediately and `scheduleResync` does one `refetch()` ~4s later - guarded by `opSeq` so a rapid second click doesn't let a stale timer stomp the newer optimistic view.
 
-```tsx
-const handleOppose = async () => {
-  if (!address || !walletClient || !publicClient) return;
-  setIsPending(true);
-  try {
-    const stored = localStorage.getItem(getStorageKey(address));
-    const currentDelegation = stored ? JSON.parse(stored, reviveBigInt) : null;
-
-    if (currentDelegation) {
-      // Delegated path: route through the backend relayer
-      const res = await fetch('/api/stake', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          delegation: currentDelegation,
-          termId: claim.counter_term_id,
-          curveId: BigInt(1).toString(),
-          assets: parseEther('0.01').toString(),
-          userAddress: address,
-        }, (key, value) => typeof value === 'bigint' ? value.toString() + 'n' : value),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.details || err.error || 'Failed to stake via relayer');
-      }
-    } else {
-      // Standard fallback: MetaMask popup
-      const patchedWalletClient = { ...walletClient, account: address };
-      await multiVaultDeposit(
-        { address: MULTIVAULT, walletClient: patchedWalletClient as any, publicClient },
-        {
-          args: [address, claim.counter_term_id, BigInt(1), BigInt(0)],
-          value: parseEther('0.01'),
-        }
-      );
-    }
-
-    // Optimistic UI update
-    setOptimisticOppose(BigInt(claim.counter_term?.vaults?.[0]?.total_shares || '0') + parseEther('0.01'));
-    setTimeout(async () => {
-      await refetch();
-      setOptimisticOppose(null);
-    }, 4000);
-
-  } catch (e: any) {
-    console.error(e);
-    alert(e.message || 'Transaction failed');
-  }
-  setIsPending(false);
-};
-```
-
-
----
 
 ## Troubleshooting
 
@@ -1811,9 +2214,10 @@ const handleOppose = async () => {
 
 This almost always means a Caveat Enforcer rejected the execution. Common causes:
 
-* **Wrong function selector** - The `AllowedMethods` caveat requires the 4-byte EVM selector. Always use `toFunctionSelector()`, never pass the raw string.
-* **HSA balance too low** - The HSA's TRUST balance has dropped below the `assets` value being sent. Top up the HSA address.
-* **Daily cap hit** - The `NativeTokenPeriodTransferEnforcer` rejects the deposit because it would exceed `periodAmount` for the current 24h window. Wait for the window to reset (the UI shows the countdown) or raise the cap by re-delegating.
+* **Method not allowed** - The `AllowedMethods` caveat only permits the `deposit` and `redeem` selectors. A delegation signed against an older version of this tutorial won't have `redeem` - the user must disable and re-enable delegated staking. Always build selectors with `toFunctionSelector()`, never a raw string.
+* **HSA balance too low** - The HSA's TRUST balance has dropped below the deposit amount. Top up the HSA address. (Withdrawals aren't affected - `redeem` moves `value = 0`.)
+* **Daily cap hit** - The `NativeTokenPeriodTransferEnforcer` rejects a *deposit* that would exceed `periodAmount` for the current 24h window. Wait for the window to reset (the UI shows the countdown) or raise the cap by re-delegating. A withdraw, or the withdraw half of a switch, is never blocked by this.
+* **`No position to withdraw`** - The API's `getShares` read returned 0 for that term - the indexer said the user held a position but the chain disagrees (usually a stale feed; it self-corrects on the next refetch).
 * **Receiver mismatch** - The `userAddress` sent to the API does not match the address pinned in the `allowedCalldata` caveat during setup.
 
 ### `MultiVault_DepositBelowMinimumDeposit`

@@ -2,8 +2,10 @@
 
 import { useWallet } from '@/lib/WalletContext';
 import { useAdminDelegation } from '@/hooks/useAdminDelegation';
+import { TxLogProvider } from '@/lib/TxLogContext';
 import { UpgradeAccount } from './UpgradeAccount';
 import { ClaimFeed } from './ClaimFeed';
+import { TxLogPanel } from './TxLogPanel';
 
 export function AppShell() {
   const { address } = useWallet();
@@ -11,11 +13,11 @@ export function AppShell() {
   const { delegation } = delegationState;
 
   return (
-    <>
+    <TxLogProvider>
       <UpgradeAccount state={delegationState} />
 
       {address && delegation ? (
-        <div className="mt-20">
+        <div className="mt-20 pb-16">
           <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">
             Activity Feed
           </h2>
@@ -28,6 +30,8 @@ export function AppShell() {
             : 'Connect your wallet to get started'}
         </p>
       )}
-    </>
+
+      <TxLogPanel />
+    </TxLogProvider>
   );
 }

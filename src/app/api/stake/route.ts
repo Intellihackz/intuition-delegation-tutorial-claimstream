@@ -9,12 +9,26 @@ import { createExecution, ExecutionMode } from '@metamask/smart-accounts-kit';
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
-    const { delegation, termId, curveId, assets, userAddress } = JSON.parse(rawBody, (key, value) =>
+    // BigInt values in the delegation were serialized as strings ending in "n".
+    const {
+      delegation,
+      termId,
+      curveId,
+      assets,
+      userAddress,
+      action = 'deposit',
+    } = JSON.parse(rawBody, (key, value) =>
       typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value
     );
 
-    if (!delegation || !termId || curveId === undefined || !assets || !userAddress) {
+    if (!delegation || !termId || curveId === undefined || !userAddress) {
       return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
+    }
+    if (action !== 'deposit' && action !== 'redeem') {
+      return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+    }
+    if (action === 'deposit' && !assets) {
+      return NextResponse.json({ error: 'Missing assets for deposit' }, { status: 400 });
     }
 
     const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
@@ -26,51 +40,78 @@ export async function POST(req: NextRequest) {
     const publicClient = createPublicClient({ chain: intuitionMainnet, transport: http() });
     const walletClient = createWalletClient({ account: adminAccount, chain: intuitionMainnet, transport: http() });
 
-    // 1. Calculate minShares (1% slippage tolerance)
-    const [shares] = await publicClient.readContract({
-      address: MULTIVAULT,
-      abi: multiVaultAbi,
-      functionName: 'previewDeposit',
-      args: [termId, BigInt(curveId), BigInt(assets)],
-    });
-    const minShares = (shares * 99n) / 100n;
+    const cid = BigInt(curveId);
+    let callData: `0x${string}`;
+    let value = BigInt(0);
 
-    // 2. Encode the MultiVault deposit call
-    const callData = encodeFunctionData({
-      abi: multiVaultAbi,
-      functionName: 'deposit',
-      // The receiver MUST match the one pinned in the delegation's caveats (the user's address)
-      args: [userAddress, termId, BigInt(curveId), minShares],
-    });
+    if (action === 'deposit') {
+      // minShares with 1% slippage tolerance
+      const [shares] = await publicClient.readContract({
+        address: MULTIVAULT,
+        abi: multiVaultAbi,
+        functionName: 'previewDeposit',
+        args: [termId, cid, BigInt(assets)],
+      });
+      const minShares = (shares * 99n) / 100n;
+      // The receiver MUST match the address pinned in the delegation's caveats.
+      callData = encodeFunctionData({
+        abi: multiVaultAbi,
+        functionName: 'deposit',
+        args: [userAddress, termId, cid, minShares],
+      });
+      value = BigInt(assets);
+    } else {
+      // redeem: close the user's whole position on this term
+      const shares = await publicClient.readContract({
+        address: MULTIVAULT,
+        abi: multiVaultAbi,
+        functionName: 'getShares',
+        args: [userAddress, termId, cid],
+      });
+      if (shares === 0n) {
+        return NextResponse.json({ error: 'No position to withdraw on this term' }, { status: 400 });
+      }
+      const [assetsAfterFees] = await publicClient.readContract({
+        address: MULTIVAULT,
+        abi: multiVaultAbi,
+        functionName: 'previewRedeem',
+        args: [termId, cid, shares],
+      });
+      const minAssets = (assetsAfterFees * 99n) / 100n;
+      // redeem() sends the withdrawn TRUST to the receiver (the user), never the caller.
+      callData = encodeFunctionData({
+        abi: multiVaultAbi,
+        functionName: 'redeem',
+        args: [userAddress, termId, cid, shares, minAssets],
+      });
+      // value stays 0 — a redemption doesn't touch the delegation's TRUST cap.
+    }
 
-    // 3. Encode the DelegationManager redeem call
+    // Encode the DelegationManager redeem call
     const target = DELEGATION_MANAGER;
     const data = DelegationManager.encode.redeemDelegations({
       delegations: [[delegation]],
       modes: [ExecutionMode.SingleDefault],
-      executions: [[createExecution({ target: MULTIVAULT, value: BigInt(assets), callData })]],
+      executions: [[createExecution({ target: MULTIVAULT, value, callData })]],
     });
 
-    // 4. (Optional but recommended) Dry-run to catch revert reasons
+    // Dry-run to surface revert reasons before spending gas
     try {
       await publicClient.call({ account: adminAccount.address, to: target, data });
-    } catch (simErr: any) {
+    } catch (simErr: unknown) {
       console.error('Simulation failed:', simErr);
-      return NextResponse.json({ 
-        error: 'Transaction simulation failed (e.g., budget exhausted or caveat violated)', 
-        details: simErr.shortMessage ?? simErr.message 
-      }, { status: 400 });
+      const e = simErr as { shortMessage?: string; message?: string };
+      return NextResponse.json(
+        { error: 'Transaction simulation failed', details: e.shortMessage ?? e.message },
+        { status: 400 },
+      );
     }
 
-    // 5. Execute the transaction!
     const hash = await walletClient.sendTransaction({ to: target, data });
-    
-    // We can choose to wait for the receipt, or return the hash immediately so the UI feels instant.
-    // Returning immediately so the delegated stake feels instant.
-    return NextResponse.json({ success: true, hash });
-
-  } catch (error: any) {
+    return NextResponse.json({ success: true, hash, action });
+  } catch (error: unknown) {
     console.error('API Stake Error:', error);
-    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
+    const message = error instanceof Error ? error.message : 'Internal server error';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -16,25 +16,27 @@ This repository serves as the official open-source demo application and educatio
 
 Through this project, developers learn how to:
 1. **Upgrade to ERC-7702**: Upgrade a standard EOA to a Hybrid Smart Account (HSA) on Intuition Mainnet without changing wallet addresses.
-2. **Attach Caveat Enforcers**: Scope delegation permissions using `AllowedTargets`, `AllowedMethods` (4-byte selector), and `NativeTokenTransferAmount`.
-3. **Execute Delegated Actions (ERC-7710)**: Use a backend Relayer API (`/api/stake`) to redeem delegations on the `DelegationManager` and execute MultiVault deposits gaslessly for the user.
-4. **Visualize HSA Budget**: Display a live progress bar tracking remaining native TRUST budget on the HSA.
-5. **Revoke Delegations**: Safely disable delegations on-chain.
+2. **Attach Caveat Enforcers**: Scope delegation permissions using `AllowedTargets`, `AllowedMethods` (`deposit` + `redeem` selectors), `NativeTokenPeriodTransfer` (an auto-refilling daily cap), `LimitedCalls`, and a `Timestamp` expiry, plus a pinned `receiver` via `allowedCalldata`.
+3. **Execute Delegated Actions (ERC-7710)**: Use a backend Relayer API (`/api/stake`) to redeem delegations on the `DelegationManager` and run gasless MultiVault deposits **and withdrawals** for the user.
+4. **Grant scoped MultiVault access**: `approve(HSA, BOTH)` so the relayer can deposit and redeem with the shares/TRUST always credited to the user.
+5. **Visualize the daily allowance**: Live meter of how much of today's delegated spend cap is left, plus the HSA balance and explorer link.
+6. **Revoke Delegations**: Safely disable delegations on-chain and sweep any unspent HSA balance back.
 
 ---
 
 ## App Features
 
-- **Intuition Claim Feed**: Paginated, infinite scroll feed of claims (triples) powered by `@0xintuition/graphql`.
-- **Delegated Staking**: Support or Oppose claims instantly without transaction popups via backend delegated execution.
-- **HSA Budget Dashboard**: Live balance indicator for the user's Hybrid Smart Account.
+- **Intuition Claim Feed**: Paginated, infinite scroll feed of claims (triples) from a small custom GraphQL query.
+- **Toggle staking**: Support / Oppose to open a position, click the same side to withdraw, click the other side to switch — all gasless, no wallet popups.
+- **Delegated Activity Log**: Bottom-docked, expandable panel recording every delegated `deposit` / `redeem` with its raw call and a transaction link.
+- **Delegated Staking Wizard**: Four one-at-a-time steps (deploy HSA, fund, approve MultiVault, sign delegation) with a live daily-allowance meter once active.
 
 ---
 
 ## Tech Stack
 
-- **Framework**: Next.js 14 / 16 (App Router)
-- **Web3 Libraries**: `viem`, `@metamask/smart-accounts-kit`, `@0xintuition/protocol`, `@0xintuition/sdk`, `@0xintuition/graphql`
+- **Framework**: Next.js 16 (App Router)
+- **Web3 Libraries**: `viem`, `@metamask/smart-accounts-kit`, `@tanstack/react-query`
 - **Network**: Intuition Mainnet (Chain ID: `1155`)
 
 ---

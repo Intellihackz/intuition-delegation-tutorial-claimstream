@@ -13,7 +13,7 @@ import {
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { getNativeTokenPeriodTransferEnforcerAvailableAmount } from '@metamask/smart-accounts-kit/actions';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS, BUDGET_START_BACKDATE_SECONDS } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, REDEEM_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS, BUDGET_START_BACKDATE_SECONDS } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 // The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
@@ -40,13 +40,16 @@ export const SETUP_STEPS: {
   action: string;
   detail: string;
   docUrl?: string;
+  docLabel?: string;
 }[] = [
   {
     key: 'deploy',
     title: 'Deploy Smart Account',
     action: 'Deploy',
     detail:
-      'An ERC-7702 upgrade gives your existing wallet address smart-account code. Same address, no funds moved. One-time.',
+      'An ERC-7702 upgrade points your wallet address at smart-account (HSA) code. Same address, same key still in control — no funds moved. One-time.',
+    docUrl: 'https://eips.ethereum.org/EIPS/eip-7702',
+    docLabel: 'ERC-7702 ↗',
   },
   {
     key: 'fund',
@@ -60,16 +63,19 @@ export const SETUP_STEPS: {
     title: 'Approve the MultiVault',
     action: 'Approve',
     detail:
-      'One approval on the Intuition MultiVault. approve(HSA, DEPOSIT) lets your smart account deposit into Atom and Triple vaults on your behalf, with the shares credited to your wallet — never the HSA. Without it the MultiVault only lets an address deposit for itself.',
+      'One approval on the Intuition MultiVault. approve(HSA, BOTH) lets your smart account deposit into and redeem from Atom and Triple vaults on your behalf — shares and any withdrawn TRUST always go to your wallet, never the HSA. Without it the MultiVault only lets an address act for itself.',
     docUrl:
       'https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373',
+    docLabel: 'MultiVault.approve() ↗',
   },
   {
     key: 'sign',
     title: 'Sign the delegation',
     action: 'Sign delegation',
     detail:
-      'One off-chain signature — no gas. It authorizes our relayer to submit deposits from your HSA and pay the gas: deposit-only, up to your daily TRUST cap, shares credited to your address, expires in 30 days.',
+      'You sign with your wallet — the same key that owns the smart account, so this is the HSA authorizing it. The delegation is a scoped permission from your HSA to our relayer: it may only call deposit / redeem on the MultiVault, always with you as the receiver, up to your daily TRUST cap, expiring in 30 days. Off-chain, no gas — we store it and reuse it for every click.',
+    docUrl: 'https://eips.ethereum.org/EIPS/eip-7710',
+    docLabel: 'ERC-7710 ↗',
   },
 ];
 
@@ -348,9 +354,9 @@ export function useAdminDelegation() {
     }
   };
 
-  // --- Step 3: approve the HSA to deposit on the EOA's behalf ---
-  // multiVault.approve(HSA, DEPOSIT) so the relayer's delegated deposit(receiver
-  // = EOA) calls are accepted and credit shares to the EOA, not the HSA. The
+  // --- Step 3: approve the HSA to deposit / redeem on the EOA's behalf ---
+  // multiVault.approve(HSA, BOTH) so the relayer's delegated deposit/redeem calls
+  // (receiver = EOA) are accepted and always credit the EOA, not the HSA. The
   // MultiVault never moves the HSA's funds itself.
   const approveMultiVault = async () => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
@@ -367,7 +373,7 @@ export function useAdminDelegation() {
         data: encodeFunctionData({
           abi: multiVaultAbi,
           functionName: 'approve',
-          args: [smartAccount.address, ApprovalType.DEPOSIT],
+          args: [smartAccount.address, ApprovalType.BOTH],
         }),
         chain: intuitionMainnet,
       });
@@ -382,7 +388,7 @@ export function useAdminDelegation() {
   };
 
   // --- Step 4: build + sign the scoped delegation (off-chain, no gas) ---
-  const signDelegation = async (dailyCapTrust: string, maxCalls: number = 100) => {
+  const signDelegation = async (dailyCapTrust: string, maxCalls: number = 500) => {
     if (!smartAccount || !address || !publicClient) {
       setError('Wallet not fully connected or Smart Account not initialized.');
       return;
@@ -421,8 +427,9 @@ export function useAdminDelegation() {
           periodDuration: BUDGET_PERIOD_SECONDS,
           startDate: periodStart,
           allowedCalldata: [
-            // Pin the receiver argument so stakes are ALWAYS credited to the user's main wallet.
-            // Notice we do NOT pin the termId here so the admin can stake on any claim for the user.
+            // Pin the receiver argument (first arg of both deposit() and redeem())
+            // so every delegated call credits the user's main wallet. We do NOT
+            // pin the termId, so the relayer can act on any claim for the user.
             {
               startIndex: DEPOSIT_OFFSET.receiver,
               value: encodeAbiParameters([{ type: 'address' }], [address]),
@@ -431,7 +438,10 @@ export function useAdminDelegation() {
         },
         caveats: [
           { type: CaveatType.AllowedTargets, targets: [MULTIVAULT] },
-          { type: CaveatType.AllowedMethods, selectors: [toFunctionSelector(DEPOSIT_SIG)] },
+          {
+            type: CaveatType.AllowedMethods,
+            selectors: [toFunctionSelector(DEPOSIT_SIG), toFunctionSelector(REDEEM_SIG)],
+          },
           { type: CaveatType.LimitedCalls, limit: maxCalls },
           { type: CaveatType.Timestamp, afterThreshold: 0, beforeThreshold: expiry },
         ],

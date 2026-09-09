@@ -70,7 +70,7 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
     if (step.key === 'deploy') deployHsa();
     else if (step.key === 'fund') fundHsa(fundAmount);
     else if (step.key === 'approve') approveMultiVault();
-    else signDelegation(cap, 100);
+    else signDelegation(cap, 500);
   };
 
   const stepBusy = busyStep === step.key;
@@ -174,7 +174,7 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
                   rel="noopener noreferrer"
                   className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap"
                 >
-                  view the source ↗
+                  {step.docLabel ?? 'reference ↗'}
                 </a>
               </>
             )}
