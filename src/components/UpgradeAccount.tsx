@@ -2,16 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useWallet } from '@/lib/WalletContext';
-import {
-  useAdminDelegation,
-  ADMIN_DELEGATEE,
-  SETUP_STEPS,
-  type SetupPhase,
-} from '@/hooks/useAdminDelegation';
+import { useAdminDelegation, ADMIN_DELEGATEE, SETUP_STEPS } from '@/hooks/useAdminDelegation';
 import { intuitionMainnet } from '@/lib/chains';
 import { formatEther, parseEther } from 'viem';
-
-const PHASE_ORDER: SetupPhase[] = ['deploying', 'funding', 'approving', 'signing'];
 
 function formatCountdown(secondsLeft: number): string {
   if (secondsLeft <= 0) return 'now';
@@ -27,22 +20,25 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
   const {
     smartAccount,
     delegation,
-    isDeploying,
     error,
-    setupDelegation,
+    busyStep,
+    isBusy,
+    wizard,
+    deployHsa,
+    fundHsa,
+    approveMultiVault,
+    signDelegation,
     revokeDelegation,
     hsaBalance,
     dailyCap,
     periodAvailable,
     periodResetsAt,
-    setupPhase,
   } = state;
+  const [fundAmount, setFundAmount] = useState('5');
   const [cap, setCap] = useState('1');
-  const [prefund, setPrefund] = useState('5');
   const [copied, setCopied] = useState(false);
   const [nowSec, setNowSec] = useState(0);
 
-  // Keep a current-time tick so the "resets in" countdown stays fresh.
   useEffect(() => {
     const update = () => setNowSec(Math.floor(Date.now() / 1000));
     update();
@@ -65,17 +61,24 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
       ? Math.min(100, Math.max(0, Number((availableWei * BigInt(10000)) / capWei) / 100))
       : 0;
   const resetsInSeconds = periodResetsAt && nowSec ? periodResetsAt - nowSec : null;
-  const prefundTooLow = Number(prefund) > 0 && Number(cap) > 0 && Number(prefund) < Number(cap);
 
-  const currentPhaseIdx = PHASE_ORDER.indexOf(setupPhase);
-  const stepStatus = (phase: SetupPhase): 'done' | 'active' | 'pending' => {
-    if (setupPhase === 'done') return 'done';
-    if (currentPhaseIdx === -1) return 'pending';
-    const idx = PHASE_ORDER.indexOf(phase);
-    if (idx < currentPhaseIdx) return 'done';
-    if (idx === currentPhaseIdx) return 'active';
-    return 'pending';
+  // First step that isn't done yet.
+  const currentIndex = !wizard.deployed ? 0 : !wizard.funded ? 1 : !wizard.approved ? 2 : 3;
+  const step = SETUP_STEPS[currentIndex];
+
+  const runCurrentStep = () => {
+    if (step.key === 'deploy') deployHsa();
+    else if (step.key === 'fund') fundHsa(fundAmount);
+    else if (step.key === 'approve') approveMultiVault();
+    else signDelegation(cap, 100);
   };
+
+  const stepBusy = busyStep === step.key;
+  const stepDisabled =
+    isBusy ||
+    !smartAccount ||
+    (step.key === 'fund' && Number(fundAmount) <= 0) ||
+    (step.key === 'sign' && Number(cap) <= 0);
 
   const copyHsa = async () => {
     if (!hsaAddress) return;
@@ -86,30 +89,104 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
     } catch {}
   };
 
+  const hsaLine = hsaAddress && (
+    <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+      <span className="text-white/40 uppercase tracking-widest">HSA</span>
+      <code className="text-white/70 break-all">{hsaAddress}</code>
+      <button onClick={copyHsa} className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10">
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      {explorerBase && (
+        <a
+          href={`${explorerBase}/address/${hsaAddress}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10"
+        >
+          Explorer &#8599;
+        </a>
+      )}
+    </div>
+  );
+
   return (
     <div className="mb-8 p-6 bg-white/5 border border-white/10 rounded-lg">
-      <div className="flex justify-between items-center flex-wrap gap-4">
+      <div className="flex justify-between items-start flex-wrap gap-4">
         <div>
           <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
-          <p className="text-sm text-white/60 mb-1">
-            Deploy your Hybrid Smart Account and delegate to our secure Admin Wallet to enable seamless delegated staking.
+          <p className="text-sm text-white/60 mb-1 max-w-md">
+            Grant our relayer a scoped, daily-capped budget so Support / Oppose runs with no wallet popups.
           </p>
           <p className="text-xs text-white/40">
             Admin Delegatee: {ADMIN_DELEGATEE.slice(0, 6)}...{ADMIN_DELEGATEE.slice(-4)}
           </p>
         </div>
 
-        <div className="flex gap-4 items-center">
-          {delegation ? (
-            <button
-              onClick={revokeDelegation}
-              disabled={isDeploying}
-              className="px-4 py-2 border border-red-500/50 text-red-400 font-bold uppercase tracking-wider text-sm hover:bg-red-500/10 disabled:opacity-50 transition-colors rounded"
-            >
-              {isDeploying ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
-            </button>
-          ) : (
-            <div className="flex gap-2 items-end flex-wrap">
+        {delegation && (
+          <button
+            onClick={revokeDelegation}
+            disabled={isBusy}
+            className="px-4 py-2 border border-red-500/50 text-red-400 font-bold uppercase tracking-wider text-sm hover:bg-red-500/10 disabled:opacity-50 transition-colors rounded"
+          >
+            {busyStep === 'revoke' ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
+          </button>
+        )}
+      </div>
+
+      {/* One-step-at-a-time wizard */}
+      {!delegation && (
+        <div className="mt-5 border-t border-white/10 pt-5">
+          {/* progress rail */}
+          <div className="flex items-center gap-2 mb-5">
+            {SETUP_STEPS.map((s, i) => {
+              const done = i < currentIndex;
+              const active = i === currentIndex;
+              return (
+                <div key={s.key} className="flex items-center gap-2 flex-1 last:flex-none">
+                  <span
+                    className={`shrink-0 w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold ${
+                      done
+                        ? 'bg-green-500 border-green-500 text-black'
+                        : active
+                          ? 'border-white text-white'
+                          : 'border-white/25 text-white/40'
+                    }`}
+                  >
+                    {done ? '✓' : i + 1}
+                  </span>
+                  {i < SETUP_STEPS.length - 1 && (
+                    <span className={`h-px flex-1 ${done ? 'bg-green-500/60' : 'bg-white/15'}`} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="text-[11px] uppercase tracking-widest text-white/40 mb-1">
+            Step {currentIndex + 1} of {SETUP_STEPS.length}
+          </div>
+          <div className="text-white font-semibold mb-1">{step.title}</div>
+          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">{step.detail}</p>
+
+          <div className="flex items-end gap-3 flex-wrap">
+            {step.key === 'fund' && (
+              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
+                Amount
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="number"
+                    value={fundAmount}
+                    onChange={(e) => setFundAmount(e.target.value)}
+                    disabled={isBusy}
+                    min="0"
+                    step="any"
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
+                  />
+                  <span className="text-white/60 text-xs">TRUST</span>
+                </div>
+              </label>
+            )}
+            {step.key === 'sign' && (
               <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
                 Daily limit
                 <div className="flex items-center gap-1 mt-1">
@@ -117,93 +194,46 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
                     type="number"
                     value={cap}
                     onChange={(e) => setCap(e.target.value)}
-                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-24 outline-none focus:border-white/50"
+                    disabled={isBusy}
                     min="0"
                     step="any"
-                    disabled={isDeploying}
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
                   />
-                  <span className="text-white/60 text-xs">TRUST</span>
+                  <span className="text-white/60 text-xs">TRUST / day</span>
                 </div>
               </label>
-              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
-                Fund HSA
-                <div className="flex items-center gap-1 mt-1">
-                  <input
-                    type="number"
-                    value={prefund}
-                    onChange={(e) => setPrefund(e.target.value)}
-                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-24 outline-none focus:border-white/50"
-                    min="0"
-                    step="any"
-                    disabled={isDeploying}
-                  />
-                  <span className="text-white/60 text-xs">TRUST</span>
-                </div>
-              </label>
-              <button
-                onClick={() => setupDelegation(cap, prefund, 100)}
-                disabled={
-                  isDeploying ||
-                  !smartAccount ||
-                  Number(cap) <= 0 ||
-                  Number(prefund) <= 0 ||
-                  prefundTooLow
-                }
-                className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
-              >
-                {isDeploying ? 'Setting up...' : 'Enable Delegated Staking'}
-              </button>
+            )}
+
+            <button
+              onClick={runCurrentStep}
+              disabled={stepDisabled}
+              className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
+            >
+              {stepBusy ? 'Working…' : step.action}
+            </button>
+
+            {stepBusy && (
+              <span className="text-xs text-white/50">
+                {step.key === 'sign' ? 'Sign in your wallet…' : 'Confirm in your wallet…'}
+              </span>
+            )}
+          </div>
+
+          {wizard.deployed && hsaAddress && <div className="mt-4">{hsaLine}</div>}
+          {wizard.deployed && hsaBalance !== null && (
+            <div className="mt-2 text-xs text-white/45">
+              HSA balance: {Number(formatEther(hsaBalance)).toFixed(3)} TRUST
             </div>
           )}
+          <p className="mt-4 text-xs text-white/35">
+            Four one-time steps. Revoking later sweeps any unspent HSA balance back to your wallet.
+          </p>
         </div>
-      </div>
-
-      {/* Onboarding stepper — shown until delegation is active */}
-      {!delegation && (
-        <ol className="mt-5 space-y-3 border-t border-white/10 pt-5">
-          {SETUP_STEPS.map((step, i) => {
-            const status = stepStatus(step.phase);
-            return (
-              <li key={step.phase} className="flex gap-3">
-                <span
-                  className={`shrink-0 mt-0.5 w-5 h-5 rounded-full border flex items-center justify-center text-[10px] font-bold ${
-                    status === 'done'
-                      ? 'bg-green-500 border-green-500 text-black'
-                      : status === 'active'
-                        ? 'border-white text-white animate-pulse'
-                        : 'border-white/25 text-white/40'
-                  }`}
-                >
-                  {status === 'done' ? '✓' : i + 1}
-                </span>
-                <div>
-                  <div
-                    className={`text-sm font-semibold ${
-                      status === 'pending' ? 'text-white/50' : 'text-white'
-                    }`}
-                  >
-                    {step.title}
-                  </div>
-                  <div className="text-xs text-white/45 leading-relaxed">{step.detail}</div>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-
-      {!delegation && prefundTooLow && (
-        <p className="mt-3 text-xs text-amber-400/80">Fund HSA should be at least one daily limit.</p>
-      )}
-      {!delegation && (
-        <p className="mt-3 text-xs text-white/40">
-          Revoking later sweeps any unspent HSA balance back to your wallet.
-        </p>
       )}
 
       {delegation && (
         <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded">
-          <div className="mb-3 font-bold">Successfully configured! Your Delegated Staking is active.</div>
+          <div className="mb-3 font-bold">Delegated staking is active.</div>
 
           {hsaAddress && (
             <div className="mb-3">

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@/lib/WalletContext';
 import {
   Implementation,
@@ -23,42 +23,54 @@ export const ADMIN_DELEGATEE: Address =
   (process.env.NEXT_PUBLIC_ADMIN_ADDRESS as Address) || '0x9c103d804bc1867F429a37707Dc5d5C9b29D7a6C';
 const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLowerCase()}`;
 const getBudgetStorageKey = (addr: string) => `intuition_admin_budget_${addr.toLowerCase()}`;
+const getWizardKey = (addr: string) => `intuition_admin_wizard_${addr.toLowerCase()}`;
 
 // Per-address budget metadata saved alongside the delegation. `dailyCap` is the
 // TRUST the relayer may spend per window; `periodStart` is the unix second the
 // first window opened, used to show when the allowance next resets.
 type BudgetMeta = { dailyCap: string; periodStart: number };
 
-// Which step of setupDelegation() is currently running, so the UI can show a
-// live onboarding stepper.
-export type SetupPhase = 'idle' | 'deploying' | 'funding' | 'approving' | 'signing' | 'done';
+// The four one-time setup steps. The user runs them one at a time.
+export type WizardStepKey = 'deploy' | 'fund' | 'approve' | 'sign';
+export type WizardProgress = { deployed: boolean; funded: boolean; approved: boolean };
 
-export const SETUP_STEPS: { phase: SetupPhase; title: string; detail: string }[] = [
+export const SETUP_STEPS: {
+  key: WizardStepKey;
+  title: string;
+  action: string;
+  detail: string;
+}[] = [
   {
-    phase: 'deploying',
-    title: 'Deploy Hybrid Smart Account',
+    key: 'deploy',
+    title: 'Deploy Smart Account',
+    action: 'Deploy',
     detail:
       'An ERC-7702 upgrade gives your existing wallet address smart-account code. Same address, no funds moved. One-time.',
   },
   {
-    phase: 'funding',
-    title: 'Fund the HSA',
+    key: 'fund',
+    title: 'Fund the Smart Account',
+    action: 'Fund',
     detail:
-      'Move TRUST from your wallet into the smart account. This is the balance the relayer stakes from; the daily cap limits how fast it can be spent.',
+      'Move TRUST from your wallet into the HSA. This is the balance the relayer stakes from; the daily cap limits how fast it can be spent.',
   },
   {
-    phase: 'approving',
+    key: 'approve',
     title: 'Approve the MultiVault',
+    action: 'Approve',
     detail:
       'Your wallet calls multiVault.approve(HSA, DEPOSIT) so the relayer can deposit with you as the receiver — shares are always credited to your wallet, never the HSA.',
   },
   {
-    phase: 'signing',
+    key: 'sign',
     title: 'Sign the delegation',
+    action: 'Sign delegation',
     detail:
-      'An off-chain signature (no gas) scoping the relayer to deposit-only, your address as receiver, a per-day TRUST cap, and an expiry.',
+      'An off-chain signature (no gas) scoping the relayer to deposit-only, your address as receiver, a per-day TRUST cap, and a 30-day expiry.',
   },
 ];
+
+const EMPTY_WIZARD: WizardProgress = { deployed: false, funded: false, approved: false };
 
 function parseBudgetMeta(raw: string | null): BudgetMeta | null {
   if (!raw) return null;
@@ -74,27 +86,57 @@ function parseBudgetMeta(raw: string | null): BudgetMeta | null {
   }
 }
 
+function parseWizard(raw: string | null): WizardProgress {
+  if (!raw) return EMPTY_WIZARD;
+  try {
+    const p = JSON.parse(raw);
+    return { deployed: !!p?.deployed, funded: !!p?.funded, approved: !!p?.approved };
+  } catch {
+    return EMPTY_WIZARD;
+  }
+}
+
+function errMessage(e: unknown): string {
+  const err = e as { shortMessage?: string; message?: string };
+  return err.shortMessage ?? err.message ?? 'Something went wrong';
+}
+
 export function useAdminDelegation() {
   const { walletClient, publicClient, address, ensureChain } = useWallet();
   const [smartAccount, setSmartAccount] = useState<MetaMaskSmartAccount | null>(null);
-  const [isDeploying, setIsDeploying] = useState(false);
+  const [busyStep, setBusyStep] = useState<WizardStepKey | 'revoke' | null>(null);
   const [delegation, setDelegation] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hsaBalance, setHsaBalance] = useState<bigint | null>(null);
   const [budgetMeta, setBudgetMeta] = useState<BudgetMeta | null>(null);
   const [periodAvailable, setPeriodAvailable] = useState<bigint | null>(null);
   const [periodResetsAt, setPeriodResetsAt] = useState<number | null>(null);
-  const [setupPhase, setSetupPhase] = useState<SetupPhase>('idle');
+  const [wizard, setWizard] = useState<WizardProgress>(EMPTY_WIZARD);
 
-  // Load existing delegation from local storage
+  // Merge a patch into the wizard progress and persist it (functional update so
+  // concurrent steps never clobber each other).
+  const patchWizard = useCallback(
+    (patch: Partial<WizardProgress>) => {
+      setWizard((prev) => {
+        const next = { ...prev, ...patch };
+        if (address) localStorage.setItem(getWizardKey(address), JSON.stringify(next));
+        return next;
+      });
+    },
+    [address],
+  );
+
+  // Load existing delegation + wizard progress from local storage
   useEffect(() => {
     if (!address) {
       queueMicrotask(() => {
         setDelegation(null);
         setBudgetMeta(null);
+        setWizard(EMPTY_WIZARD);
       });
       return;
     }
+    const wiz = parseWizard(localStorage.getItem(getWizardKey(address)));
     const saved = localStorage.getItem(getStorageKey(address));
     if (saved) {
       try {
@@ -105,25 +147,45 @@ export function useAdminDelegation() {
         queueMicrotask(() => {
           setDelegation(parsed);
           setBudgetMeta(meta);
+          setWizard(wiz);
         });
       } catch (e) {
         console.error('Failed to parse saved delegation', e);
         queueMicrotask(() => {
           setDelegation(null);
           setBudgetMeta(null);
+          setWizard(wiz);
         });
       }
     } else {
       queueMicrotask(() => {
         setDelegation(null);
         setBudgetMeta(null);
+        setWizard(wiz);
       });
     }
   }, [address]);
 
-  // Fetch HSA balance
+  // If the HSA is already deployed on-chain (a previous visit, or deployed by
+  // another dApp), mark step 1 done so the wizard resumes at the right place.
   useEffect(() => {
-    if (!delegation || !smartAccount || !publicClient) {
+    if (!smartAccount || wizard.deployed) return;
+    let cancelled = false;
+    smartAccount
+      .isDeployed()
+      .then((dep) => {
+        if (!cancelled && dep) patchWizard({ deployed: true });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [smartAccount, wizard.deployed, patchWizard]);
+
+  // Poll the HSA balance once the account is deployed (so funding is visible
+  // during the wizard, not just after the delegation is signed).
+  useEffect(() => {
+    if (!smartAccount || !publicClient || (!delegation && !wizard.deployed)) {
       queueMicrotask(() => setHsaBalance(null));
       return;
     }
@@ -135,12 +197,12 @@ export function useAdminDelegation() {
       } catch {}
     };
     fetchBalance();
-    const interval = setInterval(fetchBalance, 5000); // Poll every 5s
+    const interval = setInterval(fetchBalance, 5000);
     return () => {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [delegation, smartAccount, publicClient]);
+  }, [delegation, smartAccount, publicClient, wizard.deployed]);
 
   // Track how much of the current window's allowance is still available. The
   // NativeTokenPeriodTransferEnforcer stores nothing until the first redemption,
@@ -212,26 +274,17 @@ export function useAdminDelegation() {
     init();
   }, [address, walletClient, publicClient]);
 
-  const setupDelegation = async (
-    dailyCapTrust: string = '1',
-    prefundTrust: string = '5',
-    maxCalls: number = 100,
-  ) => {
+  // --- Step 1: deploy the Hybrid Smart Account (ERC-7702 upgrade) ---
+  const deployHsa = async () => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
       setError('Wallet not fully connected or Smart Account not initialized.');
       return;
     }
-
     try {
-      setIsDeploying(true);
+      setBusyStep('deploy');
       setError(null);
       await ensureChain();
-
-      // 1. Deploy the HSA if not deployed
-      setSetupPhase('deploying');
-      const isDeployed = await smartAccount.isDeployed();
-      if (!isDeployed) {
-        console.log('Deploying HSA...');
+      if (!(await smartAccount.isDeployed())) {
         const { factory, factoryData } = await smartAccount.getFactoryArgs();
         if (factory && factoryData) {
           const hash = await walletClient.sendTransaction({
@@ -243,15 +296,38 @@ export function useAdminDelegation() {
           await publicClient.waitForTransactionReceipt({ hash });
         }
       }
+      patchWizard({ deployed: true });
+    } catch (e: unknown) {
+      console.error(e);
+      setError(errMessage(e));
+    } finally {
+      setBusyStep(null);
+    }
+  };
 
-      // 2. Fund the HSA. This is the total staking balance; the per-day cap
-      // below limits how fast the relayer can draw it down. Top up the HSA
-      // address anytime to extend the runway.
-      setSetupPhase('funding');
+  // --- Step 2: fund the HSA with the total staking balance ---
+  const fundHsa = async (prefundTrust: string) => {
+    if (!smartAccount || !address || !walletClient || !publicClient) {
+      setError('Wallet not fully connected or Smart Account not initialized.');
+      return;
+    }
+    let prefundWei: bigint;
+    try {
+      prefundWei = parseEther(prefundTrust || '0');
+    } catch {
+      setError('Enter a valid TRUST amount.');
+      return;
+    }
+    if (prefundWei <= BigInt(0)) {
+      setError('Enter an amount to fund.');
+      return;
+    }
+    try {
+      setBusyStep('fund');
+      setError(null);
+      await ensureChain();
       const saBal = await publicClient.getBalance({ address: smartAccount.address });
-      const prefundWei = parseEther(prefundTrust);
       if (saBal < prefundWei) {
-        console.log(`Funding HSA with ${prefundTrust} TRUST...`);
         const hash = await walletClient.sendTransaction({
           account: address,
           to: smartAccount.address,
@@ -260,14 +336,29 @@ export function useAdminDelegation() {
         });
         await publicClient.waitForTransactionReceipt({ hash });
       }
+      patchWizard({ funded: true });
+    } catch (e: unknown) {
+      console.error(e);
+      setError(errMessage(e));
+    } finally {
+      setBusyStep(null);
+    }
+  };
 
-      // 3. Approve the HSA to deposit on the EOA's behalf.
-      // The EOA calls multiVault.approve(HSA, DEPOSIT) so the relayer's delegated
-      // deposit(receiver = EOA) calls are accepted and credit shares to the EOA,
-      // not the HSA. The MultiVault never moves the HSA's funds itself.
-      setSetupPhase('approving');
-      console.log('Approving MultiVault...');
-      const approveHash = await walletClient.sendTransaction({
+  // --- Step 3: approve the HSA to deposit on the EOA's behalf ---
+  // multiVault.approve(HSA, DEPOSIT) so the relayer's delegated deposit(receiver
+  // = EOA) calls are accepted and credit shares to the EOA, not the HSA. The
+  // MultiVault never moves the HSA's funds itself.
+  const approveMultiVault = async () => {
+    if (!smartAccount || !address || !walletClient || !publicClient) {
+      setError('Wallet not fully connected or Smart Account not initialized.');
+      return;
+    }
+    try {
+      setBusyStep('approve');
+      setError(null);
+      await ensureChain();
+      const hash = await walletClient.sendTransaction({
         account: address,
         to: MULTIVAULT,
         data: encodeFunctionData({
@@ -277,12 +368,40 @@ export function useAdminDelegation() {
         }),
         chain: intuitionMainnet,
       });
-      await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      await publicClient.waitForTransactionReceipt({ hash });
+      patchWizard({ approved: true });
+    } catch (e: unknown) {
+      console.error(e);
+      setError(errMessage(e));
+    } finally {
+      setBusyStep(null);
+    }
+  };
 
-      // 4. Create Delegation with strict caveats
+  // --- Step 4: build + sign the scoped delegation (off-chain, no gas) ---
+  const signDelegation = async (dailyCapTrust: string, maxCalls: number = 100) => {
+    if (!smartAccount || !address || !publicClient) {
+      setError('Wallet not fully connected or Smart Account not initialized.');
+      return;
+    }
+    let dailyCapWei: bigint;
+    try {
+      dailyCapWei = parseEther(dailyCapTrust || '0');
+    } catch {
+      setError('Enter a valid daily limit.');
+      return;
+    }
+    if (dailyCapWei <= BigInt(0)) {
+      setError('Enter a daily limit.');
+      return;
+    }
+    try {
+      setBusyStep('sign');
+      setError(null);
+      await ensureChain();
+
       const periodStart = Math.floor(Date.now() / 1000);
       const expiry = periodStart + 30 * 86400; // 30 days
-      const dailyCapWei = parseEther(dailyCapTrust);
       const newDelegation = createDelegation({
         from: smartAccount.address,
         to: ADMIN_DELEGATEE,
@@ -312,13 +431,9 @@ export function useAdminDelegation() {
         ],
       });
 
-      // 5. Sign the Delegation
-      setSetupPhase('signing');
-      console.log('Signing Delegation...');
       const signature = await smartAccount.signDelegation({ delegation: newDelegation });
       const signedDelegation = { ...newDelegation, signature };
 
-      // 6. Save it
       setDelegation(signedDelegation);
       localStorage.setItem(getStorageKey(address), JSON.stringify(signedDelegation, (key, value) =>
         typeof value === 'bigint' ? value.toString() + 'n' : value
@@ -326,16 +441,11 @@ export function useAdminDelegation() {
       const meta: BudgetMeta = { dailyCap: dailyCapTrust, periodStart };
       localStorage.setItem(getBudgetStorageKey(address), JSON.stringify(meta));
       setBudgetMeta(meta);
-      setSetupPhase('done');
-      console.log('Setup complete!');
-
     } catch (e: unknown) {
       console.error(e);
-      const err = e as { shortMessage?: string; message?: string };
-      setError(err.shortMessage ?? err.message ?? 'An error occurred during setup');
-      setSetupPhase('idle');
+      setError(errMessage(e));
     } finally {
-      setIsDeploying(false);
+      setBusyStep(null);
     }
   };
 
@@ -345,17 +455,18 @@ export function useAdminDelegation() {
     setBudgetMeta(null);
     setPeriodAvailable(null);
     setPeriodResetsAt(null);
-    setSetupPhase('idle');
+    setWizard(EMPTY_WIZARD);
     if (address) {
       localStorage.removeItem(getStorageKey(address));
       localStorage.removeItem(getBudgetStorageKey(address));
+      localStorage.removeItem(getWizardKey(address));
     }
   };
 
   const revokeDelegation = async () => {
     if (!smartAccount || !walletClient || !publicClient || !address) return;
     try {
-      setIsDeploying(true);
+      setBusyStep('revoke');
       setError(null);
       await ensureChain();
 
@@ -408,28 +519,34 @@ export function useAdminDelegation() {
       await publicClient.waitForTransactionReceipt({ hash });
 
       clearDelegation();
+      // The HSA contract stays deployed; only the funding and approval are gone,
+      // so re-enabling starts the wizard at "fund".
+      patchWizard({ deployed: true });
       console.log('Delegation successfully revoked on-chain.');
     } catch (e: unknown) {
       console.error(e);
-      const err = e as { shortMessage?: string; message?: string };
-      setError(err.shortMessage ?? err.message ?? 'Failed to revoke delegation');
+      setError(errMessage(e));
     } finally {
-      setIsDeploying(false);
+      setBusyStep(null);
     }
   };
 
   return {
     smartAccount,
     delegation,
-    isDeploying,
     error,
-    setupDelegation,
+    busyStep,
+    isBusy: busyStep !== null,
+    wizard,
+    deployHsa,
+    fundHsa,
+    approveMultiVault,
+    signDelegation,
     clearDelegation,
     revokeDelegation,
     hsaBalance,
     dailyCap: budgetMeta?.dailyCap ?? '0',
     periodAvailable,
     periodResetsAt,
-    setupPhase,
   };
 }
