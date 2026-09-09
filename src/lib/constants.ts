@@ -11,6 +11,13 @@ export const ApprovalType = { NONE: 0, DEPOSIT: 1, REDEMPTION: 2, BOTH: 3 } as c
 // amount per window, then resets automatically on the next window.
 export const BUDGET_PERIOD_SECONDS = 86_400; // 1 day
 
+// The Intuition chain's block.timestamp can trail wall-clock time by a couple
+// of minutes. We backdate the period's startDate by this much so the very
+// first delegated deposit doesn't revert with
+// `NativeTokenPeriodTransferEnforcer:transfer-not-started` while the chain
+// catches up. Cost is purely cosmetic: the first window is ~1h short.
+export const BUDGET_START_BACKDATE_SECONDS = 3_600; // 1 hour
+
 export const multiVaultAbi = [
   {
     type: 'function',

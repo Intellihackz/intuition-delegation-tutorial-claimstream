@@ -13,7 +13,7 @@ import {
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { getNativeTokenPeriodTransferEnforcerAvailableAmount } from '@metamask/smart-accounts-kit/actions';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS, BUDGET_START_BACKDATE_SECONDS } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 // The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
@@ -400,8 +400,11 @@ export function useAdminDelegation() {
       setError(null);
       await ensureChain();
 
-      const periodStart = Math.floor(Date.now() / 1000);
-      const expiry = periodStart + 30 * 86400; // 30 days
+      const now = Math.floor(Date.now() / 1000);
+      // Backdate the window start so the first redemption clears the enforcer's
+      // "transfer-not-started" check even though chain time trails wall clock.
+      const periodStart = now - BUDGET_START_BACKDATE_SECONDS;
+      const expiry = now + 30 * 86400; // 30 days
       const newDelegation = createDelegation({
         from: smartAccount.address,
         to: ADMIN_DELEGATEE,

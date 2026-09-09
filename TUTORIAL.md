@@ -157,6 +157,12 @@ export const DEPOSIT_OFFSET = {
 // NativeTokenPeriodTransfer caveat lets the relayer spend up to the chosen
 // amount per window, then refills automatically on the next one.
 export const BUDGET_PERIOD_SECONDS = 86_400; // 1 day
+
+// Intuition's block.timestamp can trail wall-clock time by a couple of
+// minutes. Backdate the period's startDate by this much so the first
+// delegated deposit doesn't revert with
+// `NativeTokenPeriodTransferEnforcer:transfer-not-started`.
+export const BUDGET_START_BACKDATE_SECONDS = 3_600; // 1 hour
 ```
 
 > The real `src/lib/constants.ts` in the repo also exports `multiVaultAbi` and an `ApprovalType` map used by the hook below - grab it from the repo so the imports resolve.
@@ -703,6 +709,8 @@ Setup is a deploy transaction, a transfer, an approval transaction, and a signat
 
 The first version of this hook used a `NativeTokenTransferAmount` scope - one fixed allowance spent over the delegation's whole life. Once it ran out, the user had to sign a brand new delegation. Swapping it for `NativeTokenPeriodTransfer` gives the relayer a fresh allowance every `BUDGET_PERIOD_SECONDS` (24h here). The `NativeTokenPeriodTransferEnforcer` tracks how much has been spent in the current window on-chain and refuses anything over `periodAmount`; when the window rolls over it resets automatically, no re-signing. We read the live remaining amount with `getNativeTokenPeriodTransferEnforcerAvailableAmount` (it reverts until the first redemption, so we fall back to the full cap), and compute the reset time from the `periodStart` we stored at setup.
 
+One gotcha: the enforcer refuses any transfer where `block.timestamp < startDate` (`transfer-not-started`). Intuition's chain clock can trail wall-clock time by a couple of minutes, so if you set `startDate` to "now" the first stake reverts until the chain catches up. We set it to `now - BUDGET_START_BACKDATE_SECONDS` (an hour earlier); the only cost is that the very first window is ~1h shorter.
+
 **Why do we use `toFunctionSelector`?**
 
 When we attach the `AllowedMethods` caveat, the blockchain requires the exact 4-byte EVM function selector - not a human-readable string. The selector for `deposit(address,bytes32,uint256,uint256)` is `0xcef6d209`. If you pass the raw string instead, the Delegation Manager will silently reject the execution. We use `viem`'s `toFunctionSelector` to generate this correctly.
@@ -733,7 +741,7 @@ import {
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { getNativeTokenPeriodTransferEnforcerAvailableAmount } from '@metamask/smart-accounts-kit/actions';
 import { encodeAbiParameters, encodeFunctionData, parseEther, type Address, createWalletClient, custom, toFunctionSelector } from 'viem';
-import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS } from '@/lib/constants';
+import { MULTIVAULT, DELEGATION_MANAGER, DEPOSIT_SIG, DEPOSIT_OFFSET, multiVaultAbi, ApprovalType, BUDGET_PERIOD_SECONDS, BUDGET_START_BACKDATE_SECONDS } from '@/lib/constants';
 import { intuitionMainnet } from '@/lib/chains';
 
 // The address derived from ADMIN_PRIVATE_KEY. Must be overridden via
@@ -1120,8 +1128,11 @@ export function useAdminDelegation() {
       setError(null);
       await ensureChain();
 
-      const periodStart = Math.floor(Date.now() / 1000);
-      const expiry = periodStart + 30 * 86400; // 30 days
+      const now = Math.floor(Date.now() / 1000);
+      // Backdate the window start so the first redemption clears the enforcer's
+      // "transfer-not-started" check even though chain time trails wall clock.
+      const periodStart = now - BUDGET_START_BACKDATE_SECONDS;
+      const expiry = now + 30 * 86400; // 30 days
       const newDelegation = createDelegation({
         from: smartAccount.address,
         to: ADMIN_DELEGATEE,
