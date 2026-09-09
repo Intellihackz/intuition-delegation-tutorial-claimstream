@@ -39,6 +39,7 @@ export const SETUP_STEPS: {
   title: string;
   action: string;
   detail: string;
+  docUrl?: string;
 }[] = [
   {
     key: 'deploy',
@@ -52,21 +53,23 @@ export const SETUP_STEPS: {
     title: 'Fund the Smart Account',
     action: 'Fund',
     detail:
-      'Move TRUST from your wallet into the HSA. This is the balance the relayer stakes from; the daily cap limits how fast it can be spent.',
+      'Move TRUST from your wallet into your smart account (HSA). Every Support / Oppose is a deposit drawn from this balance; the daily cap sets how fast it can be spent.',
   },
   {
     key: 'approve',
     title: 'Approve the MultiVault',
     action: 'Approve',
     detail:
-      'Your wallet calls multiVault.approve(HSA, DEPOSIT) so the relayer can deposit with you as the receiver — shares are always credited to your wallet, never the HSA.',
+      'One approval on the Intuition MultiVault. approve(HSA, DEPOSIT) lets your smart account deposit into Atom and Triple vaults on your behalf, with the shares credited to your wallet — never the HSA. Without it the MultiVault only lets an address deposit for itself.',
+    docUrl:
+      'https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373',
   },
   {
     key: 'sign',
     title: 'Sign the delegation',
     action: 'Sign delegation',
     detail:
-      'An off-chain signature (no gas) scoping the relayer to deposit-only, your address as receiver, a per-day TRUST cap, and a 30-day expiry.',
+      'One off-chain signature — no gas. It authorizes our relayer to submit deposits from your HSA and pay the gas: deposit-only, up to your daily TRUST cap, shares credited to your address, expires in 30 days.',
   },
 ];
 

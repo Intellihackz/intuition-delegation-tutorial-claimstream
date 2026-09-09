@@ -76,7 +76,7 @@ Here is how delegation permissions are derived, funded, signed, and stored:
 
 * **HSA Address Derivation**: The application derives the user's deterministic Hybrid Smart Account address directly from their connected MetaMask wallet.
 
-* **HSA Funding**: The user transfers TRUST into their HSA address (for example, 5 TRUST). This balance acts as their delegated staking gas tank; the per-day cap below controls how fast it can be spent.
+* **HSA Funding**: The user transfers TRUST into their HSA address (for example, 5 TRUST). Every delegated Support / Oppose is a deposit drawn from this balance; the per-day cap below controls how fast it can be spent. (Gas is paid separately, by the relayer.)
 
 * **User Signs Delegation**: The user signs an off-chain EIP-712 delegation message where:
   * **from**: The user's HSA address
@@ -403,8 +403,8 @@ This is the core of the tutorial. We will build both the UI and the delegation l
 Rather than one big "Enable" button that fires four wallet prompts in a row, we walk the user through the setup **one step at a time** — each step is its own action with its own explainer, and the wizard only advances once the previous step confirms. The four steps are:
 
 1. **Deploy the HSA** - Calculate the user's deterministic Hybrid Smart Account address and, if it isn't deployed on-chain yet, deploy it (an ERC-7702 upgrade of their own EOA — same address, no funds moved). One-time.
-2. **Fund the HSA** - Transfer TRUST from the user's main wallet to the HSA. This is the total staking balance; the per-day cap in the delegation limits how fast the relayer can draw it down. The user can top up the HSA address anytime to extend the runway.
-3. **Approve the MultiVault** - The user's EOA calls `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This authorizes the HSA to submit `deposit(receiver = EOA, ...)` calls so the resulting vault shares are credited to the user's own address. The MultiVault rejects deposits where `receiver != sender` without this approval - it never moves the HSA's funds itself; the HSA sends the deposit and the MultiVault just allows the EOA as the beneficiary.
+2. **Fund the HSA** - Transfer TRUST from the user's main wallet to the HSA. This is the staking balance every delegated deposit is drawn from; the per-day cap in the delegation limits how fast it can be drawn down. The user can top up the HSA address anytime to extend the runway. (Gas is paid by the relayer, separately.)
+3. **Approve the MultiVault** - The user's EOA calls `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This authorizes the HSA to submit `deposit(receiver = EOA, ...)` calls into Atom and Triple vaults so the resulting shares are credited to the user's own address. The MultiVault rejects deposits where `receiver != sender` without this approval - it never moves the HSA's funds itself; the HSA sends the deposit and the MultiVault just allows the EOA as the beneficiary.
 4. **Sign the delegation** - Build the scoped delegation object with all its Caveat Enforcers (including the per-day spend cap) and ask the user for one off-chain signature. Save it to `localStorage` so the feed reuses it for every future stake with no more prompts.
 
 We track how far the user has got with a small `{ deployed, funded, approved }` record in `localStorage`, plus an on-chain `isDeployed()` check so a returning user resumes at the right step. Step 4 is "done" once a signed delegation exists.
@@ -518,7 +518,7 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
         <div>
           <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
           <p className="text-sm text-white/60 max-w-md">
-            Grant our relayer a scoped, daily-capped budget so Support / Oppose runs with no wallet popups.
+            Your smart account holds the budget; a daily-capped delegation lets our relayer submit deposits from it and cover the gas &mdash; so Support / Oppose never opens your wallet.
           </p>
         </div>
 
@@ -561,7 +561,18 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
             Step {currentIndex + 1} of {SETUP_STEPS.length}
           </div>
           <div className="text-white font-semibold mb-1">{step.title}</div>
-          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">{step.detail}</p>
+          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">
+            {step.detail}
+            {step.docUrl && (
+              <>
+                {' '}
+                <a href={step.docUrl} target="_blank" rel="noopener noreferrer"
+                  className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap">
+                  view the source ↗
+                </a>
+              </>
+            )}
+          </p>
 
           <div className="flex items-end gap-3 flex-wrap">
             {step.key === 'fund' && (
@@ -717,7 +728,7 @@ Now create `src/hooks/useAdminDelegation.ts`. This is where all the logic lives.
 
 **What does approving the MultiVault actually do?**
 
-`approveMultiVault` has the user's EOA call `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This is easy to misread as "letting the MultiVault move the HSA's money" - it is the opposite. The MultiVault tracks share ownership per address, and by default it only lets an address open or add to a position for *itself* (`receiver == msg.sender`). When the relayer redeems the delegation, the **HSA** is the account calling `deposit(...)`, but we pin the `receiver` argument to the user's **EOA** so the shares land in the user's own wallet, never the HSA. That cross-address deposit is exactly what `ApprovalType.DEPOSIT` unlocks - it tells the MultiVault "the HSA is allowed to deposit on my behalf." Revoking flips the same approval back to `ApprovalType.NONE`.
+`approveMultiVault` has the user's EOA call `multiVault.approve(HSA, ApprovalType.DEPOSIT)`. This is easy to misread as "letting the MultiVault move the HSA's money" - it is the opposite. The MultiVault tracks share ownership per address, and by default it only lets an address open or add to an Atom/Triple position for *itself* (`receiver == msg.sender`). When the relayer redeems the delegation, the **HSA** is the account calling `deposit(...)`, but we pin the `receiver` argument to the user's **EOA** so the shares land in the user's own wallet, never the HSA. That cross-address deposit is exactly what `ApprovalType.DEPOSIT` unlocks - it tells the MultiVault "the HSA is allowed to deposit on my behalf." (See the [`approve` function](https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373) - it just writes `approvals[receiver][sender]`.) Revoking flips the same approval back to `ApprovalType.NONE`.
 
 **Why four separate steps instead of one button?**
 
@@ -785,6 +796,7 @@ export const SETUP_STEPS: {
   title: string;
   action: string;
   detail: string;
+  docUrl?: string;
 }[] = [
   {
     key: 'deploy',
@@ -798,21 +810,23 @@ export const SETUP_STEPS: {
     title: 'Fund the Smart Account',
     action: 'Fund',
     detail:
-      'Move TRUST from your wallet into the HSA. This is the balance the relayer stakes from; the daily cap limits how fast it can be spent.',
+      'Move TRUST from your wallet into your smart account (HSA). Every Support / Oppose is a deposit drawn from this balance; the daily cap sets how fast it can be spent.',
   },
   {
     key: 'approve',
     title: 'Approve the MultiVault',
     action: 'Approve',
     detail:
-      'Your wallet calls multiVault.approve(HSA, DEPOSIT) so the relayer can deposit with you as the receiver — shares are always credited to your wallet, never the HSA.',
+      'One approval on the Intuition MultiVault. approve(HSA, DEPOSIT) lets your smart account deposit into Atom and Triple vaults on your behalf, with the shares credited to your wallet — never the HSA. Without it the MultiVault only lets an address deposit for itself.',
+    docUrl:
+      'https://github.com/0xIntuition/intuition-contracts-v2/blob/94bddae0869f8fbf1cfb4a137aeb78b7fe302fcb/src/protocol/MultiVault.sol#L373',
   },
   {
     key: 'sign',
     title: 'Sign the delegation',
     action: 'Sign delegation',
     detail:
-      'An off-chain signature (no gas) scoping the relayer to deposit-only, your address as receiver, a per-day TRUST cap, and a 30-day expiry.',
+      'One off-chain signature — no gas. It authorizes our relayer to submit deposits from your HSA and pay the gas: deposit-only, up to your daily TRUST cap, shares credited to your address, expires in 30 days.',
   },
 ];
 

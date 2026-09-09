@@ -115,7 +115,7 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
         <div>
           <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
           <p className="text-sm text-white/60 max-w-md">
-            Grant our relayer a scoped, daily-capped budget so Support / Oppose runs with no wallet popups.
+            Your smart account holds the budget; a daily-capped delegation lets our relayer submit deposits from it and cover the gas &mdash; so Support / Oppose never opens your wallet.
           </p>
         </div>
 
@@ -163,7 +163,22 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
             Step {currentIndex + 1} of {SETUP_STEPS.length}
           </div>
           <div className="text-white font-semibold mb-1">{step.title}</div>
-          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">{step.detail}</p>
+          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">
+            {step.detail}
+            {step.docUrl && (
+              <>
+                {' '}
+                <a
+                  href={step.docUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap"
+                >
+                  view the source ↗
+                </a>
+              </>
+            )}
+          </p>
 
           <div className="flex items-end gap-3 flex-wrap">
             {step.key === 'fund' && (
