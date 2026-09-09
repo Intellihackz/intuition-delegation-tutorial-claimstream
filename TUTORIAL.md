@@ -111,7 +111,7 @@ Let's initialize our Next.js project and install everything we need.
 ```bash
 npx create-next-app@latest intuition-claim-feed
 cd intuition-claim-feed
-npm install viem @metamask/smart-accounts-kit @0xintuition/sdk @0xintuition/graphql @0xintuition/protocol
+npm install viem @metamask/smart-accounts-kit @0xintuition/protocol @tanstack/react-query graphql-request
 ```
 
 ### Environment Variables
@@ -316,22 +316,43 @@ export const useWallet = () => {
 ```
 </details>
 
-### 3. Wrap the App in the Provider
+### 3. Wrap the App in the Providers
 
-Open `src/app/layout.tsx` and wrap the app in `<WalletProvider>` so every component has access to the wallet context.
+The wallet context needs to be available everywhere, and the claim feed (built later) uses `@tanstack/react-query`, which needs a `QueryClientProvider`. Put both in one client component, `src/lib/providers.tsx`:
+
+```tsx
+// src/lib/providers.tsx
+'use client';
+
+import { useState } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { WalletProvider } from './WalletContext';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  const [queryClient] = useState(() => new QueryClient());
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <WalletProvider>{children}</WalletProvider>
+    </QueryClientProvider>
+  );
+}
+```
+
+(The repo also wraps a `WagmiProvider` here for other tooling; nothing in this tutorial's flow depends on it, so it's omitted for clarity.)
+
+Then wrap the app in `src/app/layout.tsx`:
 
 ```tsx
 // src/app/layout.tsx
 import './globals.css';
-import { WalletProvider } from '@/lib/WalletContext';
+import { Providers } from '@/lib/providers';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <body className="bg-black text-white min-h-screen font-mono">
-        <WalletProvider>
-          {children}
-        </WalletProvider>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
@@ -1293,7 +1314,7 @@ On Intuition, every claim is structured as a **Triple**: a Subject, a Predicate,
 
 **What is the Intuition GraphQL API?**
 
-Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. The `@0xintuition/graphql` SDK ships generated hooks, but none of them return *both* the triple metadata (`creator`, `created_at`) *and* the connected wallet's position in each vault — `GetTriplesWithPositions` has the positions but drops the metadata; `GetTriples` is the reverse. So we write one small query of our own and run it with `graphql-request` + `@tanstack/react-query`. The per-wallet positions let us lock a user to one side of a claim: hold a Support position and the Oppose button disables, and vice versa.
+Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. There's an `@0xintuition/graphql` SDK with generated hooks, but none of them return *both* the triple metadata (`creator`, `created_at`) *and* the connected wallet's position in each vault at once. So we write one small query of our own and run it with `graphql-request` + `@tanstack/react-query`. The per-wallet positions let us lock a user to one side of a claim: hold a Support position and the Oppose button disables, and vice versa.
 
 Create `src/hooks/useClaimFeed.ts`:
 
