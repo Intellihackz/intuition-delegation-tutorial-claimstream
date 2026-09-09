@@ -1296,21 +1296,102 @@ On Intuition, every claim is structured as a **Triple**: a Subject, a Predicate,
 
 **What is the Intuition GraphQL API?**
 
-Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. We use the `@0xintuition/graphql` SDK which generates type-safe React Query hooks from this API. We use `useInfiniteGetTriplesWithPositionsQuery` - a paginated list of all Triples, newest first, that also takes an `address` and returns *that address's* position (shares held) in each Triple's positive and counter vault. We use those positions to lock a user to one side of a claim: if you already hold a Support position, the Oppose button is disabled, and vice versa.
+Intuition provides a GraphQL API at `https://mainnet.intuition.sh/v1/graphql` that indexes all Atoms and Triples. The `@0xintuition/graphql` SDK ships generated hooks, but none of them return *both* the triple metadata (`creator`, `created_at`) *and* the connected wallet's position in each vault — `GetTriplesWithPositions` has the positions but drops the metadata; `GetTriples` is the reverse. So we write one small query of our own and run it with `graphql-request` + `@tanstack/react-query`. The per-wallet positions let us lock a user to one side of a claim: hold a Support position and the Oppose button disables, and vice versa.
 
-Create `src/components/ClaimFeed.tsx`. We will start with just the feed UI with placeholder handlers for Support and Oppose - then we will wire up the real delegation logic in the next section.
+Create `src/hooks/useClaimFeed.ts`:
+
+```ts
+// src/hooks/useClaimFeed.ts
+'use client';
+
+import { useInfiniteQuery } from '@tanstack/react-query';
+import { gql } from 'graphql-request';
+import { graphqlClient } from '@/lib/graphql';
+
+const PAGE_SIZE = 10;
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+const CLAIM_FEED_QUERY = gql`
+  query ClaimFeed($limit: Int!, $offset: Int!, $address: String!) {
+    triples(limit: $limit, offset: $offset, order_by: { created_at: desc }) {
+      term_id
+      counter_term_id
+      created_at
+      creator { id label }
+      subject { label }
+      predicate { label }
+      object { label }
+      term {
+        vaults {
+          total_shares
+          positions(where: { account_id: { _ilike: $address } }) { shares }
+        }
+      }
+      counter_term {
+        vaults {
+          total_shares
+          positions(where: { account_id: { _ilike: $address } }) { shares }
+        }
+      }
+    }
+  }
+`;
+
+type FeedVault = { total_shares: string | null; positions: { shares: string | null }[] };
+
+export type FeedClaim = {
+  term_id: `0x${string}`;
+  counter_term_id: `0x${string}`;
+  created_at: string;
+  creator: { id: string; label: string | null } | null;
+  subject: { label: string | null } | null;
+  predicate: { label: string | null } | null;
+  object: { label: string | null } | null;
+  term: { vaults: FeedVault[] } | null;
+  counter_term: { vaults: FeedVault[] } | null;
+};
+
+type FeedPage = { triples: FeedClaim[] };
+
+export function useClaimFeed(address: string | null) {
+  const addr = address ?? ZERO_ADDRESS; // sentinel: no positions match when disconnected
+  return useInfiniteQuery<FeedPage>({
+    queryKey: ['claim-feed', addr],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      graphqlClient.request<FeedPage>(CLAIM_FEED_QUERY, {
+        limit: PAGE_SIZE,
+        offset: pageParam as number,
+        address: addr,
+      }),
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.triples.length < PAGE_SIZE ? undefined : allPages.length * PAGE_SIZE,
+  });
+}
+```
+
+(`graphqlClient` is a one-liner in `src/lib/graphql.ts`: `export const graphqlClient = new GraphQLClient('https://mainnet.intuition.sh/v1/graphql')`.)
+
+Now create `src/components/ClaimFeed.tsx`. We will start with just the feed UI with placeholder handlers for Support and Oppose - then we will wire up the real delegation logic in the next section.
 
 ```tsx
 // src/components/ClaimFeed.tsx
 'use client';
 
 import { useWallet } from '@/lib/WalletContext';
-import { useInfiniteGetTriplesWithPositionsQuery } from '@0xintuition/graphql';
+import { useClaimFeed, type FeedClaim } from '@/hooks/useClaimFeed';
 import { formatUnits } from 'viem';
 import { useState, useRef, useCallback } from 'react';
 
 const PORTAL_TRIPLE_URL = (termId: string) =>
   `https://portal.intuition.systems/explore/triple/${termId}?tab=positions`;
+
+// created_at is an ISO string; guard against a missing/bad value.
+const formatClaimDate = (iso: string | null | undefined) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString();
+};
 
 // The positions list is pre-filtered to the connected address by the query.
 const holdsPosition = (vault: { positions?: { shares?: string | null }[] } | null | undefined) =>
@@ -1319,7 +1400,7 @@ const holdsPosition = (vault: { positions?: { shares?: string | null }[] } | nul
     try { return BigInt(p?.shares ?? '0') > BigInt(0); } catch { return false; }
   });
 
-function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
+function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }) {
   const { address } = useWallet();
   const [isPending, setIsPending] = useState(false);
   const [optimisticSupport, setOptimisticSupport] = useState<bigint | null>(null);
@@ -1348,6 +1429,8 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
   };
 
   const creatorAddress = claim.creator?.id || '0x0000000000000000000000000000000000000000';
+  const creatorName = claim.creator?.label || `${creatorAddress.slice(0, 6)}...${creatorAddress.slice(-4)}`;
+  const claimDate = formatClaimDate(claim.created_at);
 
   return (
     <div className="border border-white/10 p-5 bg-[#0a0a0a] mb-6 transition-all hover:bg-[#111] flex space-x-4">
@@ -1359,9 +1442,7 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
 
       <div className="flex-1">
         <div className="flex items-center justify-between text-sm mb-1">
-          <span className="font-bold text-white font-mono">
-            {creatorAddress.slice(0, 6)}...{creatorAddress.slice(-4)}
-          </span>
+          <span className="font-bold text-white font-mono">{creatorName}</span>
           <div className="flex items-center space-x-3">
             <a
               href={PORTAL_TRIPLE_URL(claim.term_id)}
@@ -1371,9 +1452,9 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
             >
               Portal ↗
             </a>
-            <span className="text-white/30 text-xs font-mono tracking-wider">
-              {new Date(claim.created_at).toLocaleDateString()}
-            </span>
+            {claimDate && (
+              <span className="text-white/30 text-xs font-mono tracking-wider">{claimDate}</span>
+            )}
           </div>
         </div>
 
@@ -1425,21 +1506,8 @@ function ClaimItem({ claim, refetch }: { claim: any; refetch: () => void }) {
 
 export function ClaimFeed() {
   const { address } = useWallet();
-  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteGetTriplesWithPositionsQuery(
-    {
-      limit: 10,
-      orderBy: [{ created_at: 'desc' }],
-      // Matched with `_ilike`, so a sentinel returns no positions when disconnected.
-      address: address ?? '0x0000000000000000000000000000000000000000',
-    },
-    {
-      initialPageParam: { offset: 0 },
-      getNextPageParam: (lastPage, allPages) => {
-        if (lastPage.triples.length < 10) return undefined;
-        return { offset: allPages.length * 10 };
-      },
-    }
-  );
+  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useClaimFeed(address);
 
   // Infinite scroll using IntersectionObserver
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -1460,7 +1528,7 @@ export function ClaimFeed() {
     <div className="space-y-4">
       {data.pages.map((page, i) => (
         <div key={i}>
-          {page.triples.map((claim: any) => (
+          {page.triples.map((claim) => (
             <ClaimItem key={claim.term_id} claim={claim} refetch={refetch} />
           ))}
         </div>

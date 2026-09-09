@@ -1,7 +1,7 @@
 'use client';
 
 import { useWallet } from '@/lib/WalletContext';
-import { useInfiniteGetTriplesWithPositionsQuery } from '@0xintuition/graphql';
+import { useClaimFeed, type FeedClaim } from '@/hooks/useClaimFeed';
 import { multiVaultDeposit } from '@0xintuition/protocol';
 import { formatUnits, parseEther } from 'viem';
 import { useState, useRef, useCallback } from 'react';
@@ -9,6 +9,14 @@ import { MULTIVAULT } from '@/lib/constants';
 
 const PORTAL_TRIPLE_URL = (termId: string) =>
   `https://portal.intuition.systems/explore/triple/${termId}?tab=positions`;
+
+// created_at comes back as an ISO string; guard against a missing/bad value
+// instead of rendering "Invalid Date".
+const formatClaimDate = (iso: string | null | undefined): string => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString();
+};
 
 type VaultWithPositions = { positions?: { shares?: string | null }[] } | null | undefined;
 
@@ -28,7 +36,7 @@ const getStorageKey = (addr: string) => `intuition_admin_delegation_${addr.toLow
 const reviveBigInt = (key: string, value: any) =>
   typeof value === 'string' && /^\d+n$/.test(value) ? BigInt(value.slice(0, -1)) : value;
 
-function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
+function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }) {
   const { address, walletClient, publicClient } = useWallet();
   const [isPending, setIsPending] = useState(false);
   const [optimisticSupport, setOptimisticSupport] = useState<bigint | null>(null);
@@ -143,7 +151,9 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
   };
 
   const creatorAddress = claim.creator?.id || '0x0000000000000000000000000000000000000000';
-  const truncatedCreator = `${creatorAddress.slice(0, 6)}...${creatorAddress.slice(-4)}`;
+  const creatorName =
+    claim.creator?.label || `${creatorAddress.slice(0, 6)}...${creatorAddress.slice(-4)}`;
+  const claimDate = formatClaimDate(claim.created_at);
 
   return (
     <div className="border border-white/10 p-5 bg-[#0a0a0a] mb-6 transition-all hover:bg-[#111] cursor-default flex space-x-4">
@@ -159,7 +169,7 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
         {/* Header */}
         <div className="flex items-center justify-between text-sm mb-1">
           <span className="font-bold text-white hover:underline cursor-pointer font-mono">
-            {truncatedCreator}
+            {creatorName}
           </span>
           <div className="flex items-center space-x-3">
             <a
@@ -170,9 +180,9 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
             >
               Portal ↗
             </a>
-            <span className="text-white/30 text-xs font-mono tracking-wider">
-              {new Date(claim.created_at).toLocaleDateString()}
-            </span>
+            {claimDate && (
+              <span className="text-white/30 text-xs font-mono tracking-wider">{claimDate}</span>
+            )}
           </div>
         </div>
 
@@ -226,21 +236,8 @@ function ClaimItem({ claim, refetch }: { claim: any, refetch: () => void }) {
 
 export function ClaimFeed() {
   const { address } = useWallet();
-  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteGetTriplesWithPositionsQuery(
-    {
-      limit: 10,
-      orderBy: [{ created_at: 'desc' }],
-      // `_ilike` match, so a non-address sentinel returns no positions when disconnected.
-      address: address ?? '0x0000000000000000000000000000000000000000',
-    },
-    {
-      initialPageParam: { offset: 0 },
-      getNextPageParam: (lastPage, allPages) => {
-        if (lastPage.triples.length < 10) return undefined;
-        return { offset: allPages.length * 10 };
-      }
-    }
-  );
+  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useClaimFeed(address);
 
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useCallback((node: HTMLDivElement | null) => {
@@ -263,7 +260,7 @@ export function ClaimFeed() {
     <div className="space-y-4">
       {data.pages.map((page, i) => (
         <div key={i}>
-          {page.triples.map((claim: any) => (
+          {page.triples.map((claim) => (
             <ClaimItem key={claim.term_id} claim={claim} refetch={refetch} />
           ))}
         </div>
