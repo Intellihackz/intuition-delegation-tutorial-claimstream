@@ -6,6 +6,40 @@ import { MULTIVAULT, DELEGATION_MANAGER, multiVaultAbi } from '@/lib/constants';
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { createExecution, ExecutionMode } from '@metamask/smart-accounts-kit';
 
+const publicClient = createPublicClient({ chain: intuitionMainnet, transport: http() });
+
+// The relayer has ONE nonce sequence. A user clicking fast across several claims
+// fires several /api/stake calls at once; if two of them read the same nonce,
+// the second transaction reverts with "nonce too low". We serialize the
+// read-nonce-then-send step in a promise chain and track the nonce in memory so
+// a not-yet-propagated pending tx doesn't leave a gap. (In a multi-instance
+// deployment each instance has its own chain — a shared nonce service or a
+// single relayer worker would be the production answer.)
+let relayerChain: Promise<unknown> = Promise.resolve();
+let managedNonce: number | null = null;
+
+async function sendFromRelayer(
+  account: ReturnType<typeof privateKeyToAccount>,
+  tx: { to: `0x${string}`; data: `0x${string}` },
+): Promise<`0x${string}`> {
+  const walletClient = createWalletClient({ account, chain: intuitionMainnet, transport: http() });
+  const run = async () => {
+    const chainNonce = await publicClient.getTransactionCount({ address: account.address, blockTag: 'pending' });
+    const nonce = managedNonce === null ? chainNonce : Math.max(chainNonce, managedNonce);
+    managedNonce = nonce + 1;
+    try {
+      return await walletClient.sendTransaction({ ...tx, nonce });
+    } catch (e) {
+      // The send failed, so that nonce was never used — re-read from chain next time.
+      managedNonce = null;
+      throw e;
+    }
+  };
+  const result = relayerChain.then(run, run);
+  relayerChain = result.catch(() => {}); // keep the chain alive after a failure
+  return result;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.text();
@@ -37,8 +71,6 @@ export async function POST(req: NextRequest) {
     }
 
     const adminAccount = privateKeyToAccount(adminPrivateKey as `0x${string}`);
-    const publicClient = createPublicClient({ chain: intuitionMainnet, transport: http() });
-    const walletClient = createWalletClient({ account: adminAccount, chain: intuitionMainnet, transport: http() });
 
     const cid = BigInt(curveId);
     let callData: `0x${string}`;
@@ -107,7 +139,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const hash = await walletClient.sendTransaction({ to: target, data });
+    const hash = await sendFromRelayer(adminAccount, { to: target, data });
     return NextResponse.json({ success: true, hash, action });
   } catch (error: unknown) {
     console.error('API Stake Error:', error);

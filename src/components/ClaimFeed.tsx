@@ -54,6 +54,9 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
   // Only the most recent action's refetch should clear the optimistic view, so
   // that clicking again during the indexer-lag window doesn't cause flicker.
   const opSeq = useRef(0);
+  // Synchronous guard: `isPending` (and the disabled button) only take effect on
+  // the next render, so a fast double-click could slip a second `act` through.
+  const running = useRef(false);
 
   const supportTermId = claim.term_id;
   const opposeTermId = claim.counter_term_id;
@@ -108,13 +111,14 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
   };
 
   const act = async (clicked: Side) => {
-    if (!address || isPending) return;
+    if (!address || running.current) return;
     const stored = localStorage.getItem(getDelegationKey(address));
     const delegation = stored ? JSON.parse(stored, reviveBigInt) : null;
     if (!delegation) {
       alert('Enable delegated staking to use the feed.');
       return;
     }
+    running.current = true;
 
     const termFor = (side: Side) => (side === 'support' ? supportTermId : opposeTermId);
     const baseFor = (side: Side) => (side === 'support' ? supportBase : opposeBase);
@@ -155,8 +159,10 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
       console.error(e);
       alert(e instanceof Error ? e.message : 'Transaction failed');
       scheduleResync(2000);
+    } finally {
+      running.current = false;
+      setIsPending(false);
     }
-    setIsPending(false);
   };
 
   const creatorAddress = claim.creator?.id || '0x0000000000000000000000000000000000000000';

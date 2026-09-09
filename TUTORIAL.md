@@ -1773,6 +1773,9 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
   // Only the most recent action's refetch should clear the optimistic view, so
   // that clicking again during the indexer-lag window doesn't cause flicker.
   const opSeq = useRef(0);
+  // Synchronous guard: `isPending` (and the disabled button) only take effect on
+  // the next render, so a fast double-click could slip a second `act` through.
+  const running = useRef(false);
 
   const supportTermId = claim.term_id;
   const opposeTermId = claim.counter_term_id;
@@ -1827,13 +1830,14 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
   };
 
   const act = async (clicked: Side) => {
-    if (!address || isPending) return;
+    if (!address || running.current) return;
     const stored = localStorage.getItem(getDelegationKey(address));
     const delegation = stored ? JSON.parse(stored, reviveBigInt) : null;
     if (!delegation) {
       alert('Enable delegated staking to use the feed.');
       return;
     }
+    running.current = true;
 
     const termFor = (side: Side) => (side === 'support' ? supportTermId : opposeTermId);
     const baseFor = (side: Side) => (side === 'support' ? supportBase : opposeBase);
@@ -1874,8 +1878,10 @@ function ClaimItem({ claim, refetch }: { claim: FeedClaim; refetch: () => void }
       console.error(e);
       alert(e instanceof Error ? e.message : 'Transaction failed');
       scheduleResync(2000);
+    } finally {
+      running.current = false;
+      setIsPending(false);
     }
-    setIsPending(false);
   };
 
   const creatorAddress = claim.creator?.id || '0x0000000000000000000000000000000000000000';
@@ -2070,9 +2076,11 @@ Create `src/app/api/stake/route.ts`. This runs on the server, where the Admin Wa
 3. **For `redeem`:** reads the user's full position with `getShares`, previews it for a `minAssets` (1% slippage), encodes `redeem(receiver, termId, curveId, shares, minAssets)`, leaves `value` at `0`.
 4. Wraps the execution in `DelegationManager.redeemDelegations(...)`.
 5. Dry-runs it with `publicClient.call` to surface a revert reason before spending gas.
-6. Broadcasts and returns `{ hash, action }`.
+6. Sends it via `sendFromRelayer` and returns `{ hash, action }`.
 
 The `receiver` argument is always the user's address - it has to match the pin in the delegation's `allowedCalldata` caveat, and `redeem` sends the withdrawn TRUST straight there.
+
+**One relayer, one nonce.** A user clicking fast across several claims fires several `/api/stake` calls at nearly the same time. Each one wants to send a transaction from the *same* Admin Wallet, and each `sendTransaction` starts by reading that wallet's nonce. If two of them read the same value, the second transaction reverts with *"nonce provided ... is lower than the current nonce"*. `sendFromRelayer` fixes this by chaining every send onto a module-level promise (`relayerChain`) so the read-nonce-then-send step runs one at a time, and by tracking the nonce in memory (`managedNonce`) so a pending-but-not-yet-propagated tx doesn't leave a gap. It's the minimum a relayer needs; a real one would run a single dedicated signer process or a shared nonce service (a module-level variable isn't shared across serverless instances). The frontend also guards each claim card with a `running` ref so a double-click can't fire two ops for the same claim.
 
 ```ts
 // src/app/api/stake/route.ts
@@ -2083,6 +2091,40 @@ import { intuitionMainnet } from '@/lib/chains';
 import { MULTIVAULT, DELEGATION_MANAGER, multiVaultAbi } from '@/lib/constants';
 import { DelegationManager } from '@metamask/smart-accounts-kit/contracts';
 import { createExecution, ExecutionMode } from '@metamask/smart-accounts-kit';
+
+const publicClient = createPublicClient({ chain: intuitionMainnet, transport: http() });
+
+// The relayer has ONE nonce sequence. A user clicking fast across several claims
+// fires several /api/stake calls at once; if two of them read the same nonce,
+// the second transaction reverts with "nonce too low". We serialize the
+// read-nonce-then-send step in a promise chain and track the nonce in memory so
+// a not-yet-propagated pending tx doesn't leave a gap. (In a multi-instance
+// deployment each instance has its own chain — a shared nonce service or a
+// single relayer worker would be the production answer.)
+let relayerChain: Promise<unknown> = Promise.resolve();
+let managedNonce: number | null = null;
+
+async function sendFromRelayer(
+  account: ReturnType<typeof privateKeyToAccount>,
+  tx: { to: `0x${string}`; data: `0x${string}` },
+): Promise<`0x${string}`> {
+  const walletClient = createWalletClient({ account, chain: intuitionMainnet, transport: http() });
+  const run = async () => {
+    const chainNonce = await publicClient.getTransactionCount({ address: account.address, blockTag: 'pending' });
+    const nonce = managedNonce === null ? chainNonce : Math.max(chainNonce, managedNonce);
+    managedNonce = nonce + 1;
+    try {
+      return await walletClient.sendTransaction({ ...tx, nonce });
+    } catch (e) {
+      // The send failed, so that nonce was never used — re-read from chain next time.
+      managedNonce = null;
+      throw e;
+    }
+  };
+  const result = relayerChain.then(run, run);
+  relayerChain = result.catch(() => {}); // keep the chain alive after a failure
+  return result;
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -2115,8 +2157,6 @@ export async function POST(req: NextRequest) {
     }
 
     const adminAccount = privateKeyToAccount(adminPrivateKey as `0x${string}`);
-    const publicClient = createPublicClient({ chain: intuitionMainnet, transport: http() });
-    const walletClient = createWalletClient({ account: adminAccount, chain: intuitionMainnet, transport: http() });
 
     const cid = BigInt(curveId);
     let callData: `0x${string}`;
@@ -2185,7 +2225,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const hash = await walletClient.sendTransaction({ to: target, data });
+    const hash = await sendFromRelayer(adminAccount, { to: target, data });
     return NextResponse.json({ success: true, hash, action });
   } catch (error: unknown) {
     console.error('API Stake Error:', error);
@@ -2219,6 +2259,10 @@ This almost always means a Caveat Enforcer rejected the execution. Common causes
 * **Daily cap hit** - The `NativeTokenPeriodTransferEnforcer` rejects a *deposit* that would exceed `periodAmount` for the current 24h window. Wait for the window to reset (the UI shows the countdown) or raise the cap by re-delegating. A withdraw, or the withdraw half of a switch, is never blocked by this.
 * **`No position to withdraw`** - The API's `getShares` read returned 0 for that term - the indexer said the user held a position but the chain disagrees (usually a stale feed; it self-corrects on the next refetch).
 * **Receiver mismatch** - The `userAddress` sent to the API does not match the address pinned in the `allowedCalldata` caveat during setup.
+
+### `Nonce provided ... is lower than the current nonce`
+
+Two `/api/stake` calls landed at once and both read the same Admin Wallet nonce - one transaction wins, the other reverts. This is what `sendFromRelayer`'s promise-chain + `managedNonce` are for; if you still hit it, your relayer is running on more than one instance without a shared nonce source. The quick mitigation is a global in-flight lock on the frontend so only one op runs at a time.
 
 ### `MultiVault_DepositBelowMinimumDeposit`
 
