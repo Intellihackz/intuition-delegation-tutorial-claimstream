@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useWallet } from '@/lib/WalletContext';
-import { useAdminDelegation, ADMIN_DELEGATEE, SETUP_STEPS } from '@/hooks/useAdminDelegation';
+import { useAdminDelegation, SETUP_STEPS } from '@/hooks/useAdminDelegation';
 import { intuitionMainnet } from '@/lib/chains';
 import { formatEther, parseEther } from 'viem';
 
@@ -114,11 +114,8 @@ export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDel
       <div className="flex justify-between items-start flex-wrap gap-4">
         <div>
           <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
-          <p className="text-sm text-white/60 mb-1 max-w-md">
+          <p className="text-sm text-white/60 max-w-md">
             Grant our relayer a scoped, daily-capped budget so Support / Oppose runs with no wallet popups.
-          </p>
-          <p className="text-xs text-white/40">
-            Admin Delegatee: {ADMIN_DELEGATEE.slice(0, 6)}...{ADMIN_DELEGATEE.slice(-4)}
           </p>
         </div>
 
