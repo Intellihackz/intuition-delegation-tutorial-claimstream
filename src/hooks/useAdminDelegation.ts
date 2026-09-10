@@ -47,9 +47,9 @@ export const SETUP_STEPS: {
     title: 'Deploy Smart Account',
     action: 'Deploy',
     detail:
-      'An ERC-7702 upgrade points your wallet address at smart-account (HSA) code. Same address, same key still in control — no funds moved. One-time.',
-    docUrl: 'https://eips.ethereum.org/EIPS/eip-7702',
-    docLabel: 'ERC-7702 ↗',
+      'Deploy your Hybrid Smart Account (HSA) — a smart account your wallet owns and fully controls, at its own deterministic address (derived from your wallet). It is the account that signs the delegation in step 4. One-time; no funds moved here.',
+    docUrl: 'https://docs.metamask.io/smart-accounts-kit/concepts/smart-accounts/',
+    docLabel: 'Smart accounts ↗',
   },
   {
     key: 'fund',
@@ -283,7 +283,7 @@ export function useAdminDelegation() {
     init();
   }, [address, walletClient, publicClient]);
 
-  // --- Step 1: deploy the Hybrid Smart Account (ERC-7702 upgrade) ---
+  // --- Step 1: deploy the Hybrid Smart Account (the EOA-owned delegator) ---
   const deployHsa = async () => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
       setError('Wallet not fully connected or Smart Account not initialized.');

@@ -1,6 +1,6 @@
 # Intuition Claim Feed (ERC-7710 Delegation Tutorial DApp)
 
-A full-stack Next.js application built on the **Intuition Protocol** demonstrating **Delegated Execution (ERC-7710)** and **Hybrid Smart Accounts (ERC-7702)**. 
+A full-stack Next.js application demonstrating **scoped, gasless delegated execution (ERC-7710)** on the **Intuition Protocol**: the user's smart account signs one daily-capped delegation, and a backend relayer redeems it to Support / Oppose claims on their behalf — no wallet popups.
 
 This repository serves as the official open-source demo application and educational resource for **Mission 09: Delegation Framework Tutorial for Intuition (ERC-7710)**.
 
@@ -15,7 +15,7 @@ This repository serves as the official open-source demo application and educatio
 ## Educational Objectives
 
 Through this project, developers learn how to:
-1. **Upgrade to ERC-7702**: Upgrade a standard EOA to a Hybrid Smart Account (HSA) on Intuition Mainnet without changing wallet addresses.
+1. **Deploy a delegator account**: Deploy a Hybrid Smart Account (HSA) — a smart account the user's wallet owns and controls, at its own deterministic address — to sign scoped delegations from.
 2. **Attach Caveat Enforcers**: Scope delegation permissions using `AllowedTargets`, `AllowedMethods` (`deposit` + `redeem` selectors), `NativeTokenPeriodTransfer` (an auto-refilling daily cap), `LimitedCalls`, and a `Timestamp` expiry, plus a pinned `receiver` via `allowedCalldata`.
 3. **Execute Delegated Actions (ERC-7710)**: Use a backend Relayer API (`/api/stake`) to redeem delegations on the `DelegationManager` and run gasless MultiVault deposits **and withdrawals** for the user.
 4. **Grant scoped MultiVault access**: `approve(HSA, BOTH)` so the relayer can deposit and redeem with the shares/TRUST always credited to the user.

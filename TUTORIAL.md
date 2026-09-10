@@ -58,7 +58,7 @@ To understand how this architecture operates, it is helpful to explore the core 
 
 * **[Externally Owned Account (EOA)](https://ethereum.org/en/developers/docs/accounts/)**: The foundational layer of user identity. This is the standard wallet address managed directly by browser extensions like MetaMask. In traditional web3 applications, an EOA must sign every individual transaction directly on-chain, limiting automation and forcing users to approve every gas fee manually.
 
-* **[ERC-7702](https://eips.ethereum.org/EIPS/eip-7702) (Hybrid Smart Accounts / HSA)**: A protocol upgrade introducing code execution capabilities directly to the user's existing EOA. An HSA upgrades the user's EOA into a smart account deterministically, giving it programmable account capabilities without forcing the user to transfer funds to a new address or deploy an entirely separate smart contract wallet. Because the HSA address matches the user's EOA address, all assets and identities remain unified.
+* **[Hybrid Smart Account (HSA)](https://docs.metamask.io/smart-accounts-kit/concepts/smart-accounts/)**: A smart account the user's wallet fully owns and controls, deployed at its own deterministic address (derived from the wallet address + a salt). It's the **delegator** — the account that signs delegations. We use a Hybrid smart account rather than an ERC-7702 upgrade of the EOA itself because real caveats (pinning `receiver`, gating specific selectors) need a delegator the dapp controls; ERC-7702 + ERC-7715 — the sanctioned path for a wallet-upgraded account — can't constrain arbitrary call arguments. So the HSA lives at its own address, and the user's key signs on its behalf.
 
 * **[ERC-7710](https://eips.ethereum.org/EIPS/eip-7710) (Delegation Framework)**: A standardized protocol for creating, signing, and redeeming execution authority off-chain. Instead of giving a third party full access to a wallet, ERC-7710 allows the user to sign an off-chain EIP-712 payload that grants another address, known as the delegatee, permission to execute specific actions on their behalf.
 
@@ -76,9 +76,9 @@ To see how these concepts connect during setup and execution, let's explore the 
 
 Here is how delegation permissions are derived, funded, signed, and stored:
 
-* **HSA Address Derivation**: The application derives the user's deterministic Hybrid Smart Account address directly from their connected MetaMask wallet.
+* **HSA Address Derivation**: The application derives the user's Hybrid Smart Account address deterministically from their connected wallet address (+ a fixed salt). It is a **separate address** the user's wallet owns — not the wallet's own address.
 
-* **HSA Funding**: The user transfers TRUST into their HSA address (for example, 5 TRUST). Every delegated Support / Oppose is a deposit drawn from this balance; the per-day cap below controls how fast it can be spent. (Gas is paid separately, by the relayer.)
+* **HSA Funding**: The user transfers TRUST from their wallet into their HSA address (for example, 5 TRUST). Every delegated Support / Oppose is a deposit drawn from this balance; the per-day cap below controls how fast it can be spent. (Gas is paid separately, by the relayer.)
 
 * **User Signs Delegation**: The user signs an off-chain EIP-712 delegation message where:
   * **from**: The user's HSA address
@@ -405,7 +405,7 @@ This is the core of the tutorial. We will build both the UI and the delegation l
 
 Rather than one big "Enable" button that fires four wallet prompts in a row, we walk the user through the setup **one step at a time** — each step is its own action with its own explainer, and the wizard only advances once the previous step confirms. The four steps are:
 
-1. **Deploy the HSA** - Calculate the user's deterministic Hybrid Smart Account address and, if it isn't deployed on-chain yet, deploy it (an ERC-7702 upgrade of their own EOA — same address, *same key still in control*, no funds moved). One-time.
+1. **Deploy the HSA** - Calculate the user's deterministic Hybrid Smart Account address (a separate address the user's wallet owns) and, if it isn't deployed on-chain yet, deploy it. No funds moved here. One-time.
 2. **Fund the HSA** - Transfer TRUST from the user's main wallet to the HSA. This is the staking balance every delegated deposit is drawn from; the per-day cap in the delegation limits how fast it can be drawn down. The user can top up the HSA address anytime to extend the runway. (Gas is paid by the relayer, separately.)
 3. **Approve the MultiVault** - The user's EOA calls `multiVault.approve(HSA, ApprovalType.BOTH)`. This authorizes the HSA to submit `deposit` *and* `redeem` calls (with `receiver = EOA`) into Atom and Triple vaults, so shares — and any withdrawn TRUST — are credited to the user's own address. The MultiVault rejects `deposit`/`redeem` where `receiver != sender` without this approval - it never moves the HSA's funds itself; the HSA sends the call and the MultiVault just allows the EOA as the beneficiary.
 4. **Sign the delegation** - Build the scoped delegation (`from: HSA`, `to: relayer`, plus caveats: deposit + redeem selectors, receiver pinned to the user, the per-day cap, an expiry) and ask the user for one off-chain signature. Because the user's key owns the HSA, that signature *is* the HSA granting the permission. Save it to `localStorage` so the feed reuses it for every future op with no more prompts. (See [What is the user actually signing in step 4?](#the-delegation-hook) below - it's the subtlest part of the flow.)
@@ -794,13 +794,13 @@ The approval is a bitfield: `DEPOSIT` (`0b01`) gates `deposit()`, `REDEMPTION` (
 
 **What is the user actually signing in step 4? (the subtle one)**
 
-This is the part most people trip on, so it's worth being explicit. Three addresses are in play, and two of them are the *same address*:
+This is the part most people trip on, so it's worth being explicit. Three separate addresses are in play:
 
 * The **EOA** - the user's plain wallet, controlled by their MetaMask private key.
-* The **HSA** - after step 1, the EOA's address also has smart-account code (ERC-7702). It's the *same address*, and the *same private key still controls it* - the EOA is the HSA's owner.
+* The **HSA** - the Hybrid Smart Account from step 1. It's at its *own* address (deterministically derived from the EOA), and the EOA is its **owner** - so the EOA's key can act on the HSA's behalf.
 * The **relayer** - our Admin Wallet (`ADMIN_DELEGATEE`), a completely separate address.
 
-`createDelegation({ from: HSA, to: ADMIN_DELEGATEE, scope, caveats })` builds a permission object that says *"the HSA authorizes the relayer to execute these specific calls."* The user signs it with MetaMask - and because their key **is** the HSA's owner, that signature counts as the HSA granting the permission. No transaction, no gas; the signed blob just goes to `localStorage`.
+`createDelegation({ from: HSA, to: ADMIN_DELEGATEE, scope, caveats })` builds a permission object that says *"the HSA authorizes the relayer to execute these specific calls."* The user signs it with MetaMask - and because their key **owns** the HSA, that signature counts as the HSA granting the permission. No transaction, no gas; the signed blob just goes to `localStorage`.
 
 Later, for every click, the relayer calls `DelegationManager.redeemDelegations(thisDelegation, [oneExecution])`. The DelegationManager verifies the HSA's signature, runs the execution's `target` / `value` / `calldata` through every caveat (`AllowedTargets` = MultiVault, `AllowedMethods` = `deposit`/`redeem`, `AllowedCalldata` = receiver is the EOA, `NativeTokenPeriodTransfer` = under the daily cap, `Timestamp` = not expired), and only then forwards the call **as the HSA**. So the MultiVault sees `msg.sender == HSA` spending the HSA's balance, with `receiver == EOA` - which is why step 3's `approve(HSA, BOTH)` was needed, and why the caveat pins the receiver.
 
@@ -882,9 +882,9 @@ export const SETUP_STEPS: {
     title: 'Deploy Smart Account',
     action: 'Deploy',
     detail:
-      'An ERC-7702 upgrade points your wallet address at smart-account (HSA) code. Same address, same key still in control — no funds moved. One-time.',
-    docUrl: 'https://eips.ethereum.org/EIPS/eip-7702',
-    docLabel: 'ERC-7702 ↗',
+      'Deploy your Hybrid Smart Account (HSA) — a smart account your wallet owns and fully controls, at its own deterministic address (derived from your wallet). It is the account that signs the delegation in step 4. One-time; no funds moved here.',
+    docUrl: 'https://docs.metamask.io/smart-accounts-kit/concepts/smart-accounts/',
+    docLabel: 'Smart accounts ↗',
   },
   {
     key: 'fund',
@@ -1118,7 +1118,7 @@ export function useAdminDelegation() {
     init();
   }, [address, walletClient, publicClient]);
 
-  // --- Step 1: deploy the Hybrid Smart Account (ERC-7702 upgrade) ---
+  // --- Step 1: deploy the Hybrid Smart Account (the EOA-owned delegator) ---
   const deployHsa = async () => {
     if (!smartAccount || !address || !walletClient || !publicClient) {
       setError('Wallet not fully connected or Smart Account not initialized.');
