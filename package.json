@@ -6,8 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "test:delegation": "tsx scripts/runLocalFlow.ts"
+    "lint": "eslint"
   },
   "dependencies": {
     "@0xintuition/graphql": "^2.0.2",
