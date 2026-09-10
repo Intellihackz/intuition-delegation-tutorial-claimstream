@@ -152,10 +152,9 @@ export const DELEGATION_MANAGER: Address = '0xdb9B1e94B5b69Df7e401DDbedE43491141
 export const DEPOSIT_SIG = 'deposit(address,bytes32,uint256,uint256)';
 export const REDEEM_SIG = 'redeem(address,bytes32,uint256,uint256,uint256)';
 
-// Byte offsets for pinning specific arguments inside the calldata
-export const DEPOSIT_OFFSET = {
-  receiver: 4,   // First argument after the 4-byte function selector
-};
+// Byte offset of the `receiver` argument inside the calldata (right after the
+// 4-byte selector). Both deposit() and redeem() take it first, so one pin works.
+export const DEPOSIT_OFFSET = { receiver: 4 } as const;
 
 // The rolling window the delegated staking cap is measured over. The
 // NativeTokenPeriodTransfer caveat lets the relayer spend up to the chosen
