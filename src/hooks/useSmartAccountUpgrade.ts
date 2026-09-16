@@ -19,7 +19,7 @@ export function useSmartAccountUpgrade() {
       setIsPending(true);
       setError(null);
 
-      // Ensure the wallet is on Intuition Testnet before upgrading.
+      // Ensure the wallet is on Intuition Mainnet before upgrading.
       await ensureChain();
 
       // EIP-5792: ask MetaMask to send a batch of calls. viem's signAuthorization
@@ -48,12 +48,13 @@ export function useSmartAccountUpgrade() {
 
       setTxHash(hash);
       setIsSuccess(true);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
       // Older wallets without EIP-5792 support surface a method-not-found error.
-      const message = /wallet_sendCalls|method not (found|supported)|Unsupported/i.test(e?.message ?? '')
+      const errObj = e as { message?: string };
+      const message = /wallet_sendCalls|method not (found|supported)|Unsupported/i.test(errObj?.message ?? '')
         ? 'Your wallet does not support EIP-5792 batched calls. Update MetaMask to enable smart-account upgrades.'
-        : (e?.message || 'Unknown error occurred');
+        : (errObj?.message || 'Unknown error occurred');
       setError(e instanceof Error && !/wallet_sendCalls/i.test(e.message) ? e : new Error(message));
     } finally {
       setIsPending(false);
