@@ -4,17 +4,22 @@ Welcome! In this tutorial, we're going to build a fully functional **Claim Feed*
 
 By the end, you'll have a production-ready Next.js application where users can connect their MetaMask wallet, browse a live feed of claims, and support or oppose them - all without a single MetaMask popup per action.
 
+This tutorial is split into six checkpoints. Each one ends with a real `npm run dev` preview — something you can actually click through in the browser — building on the last, so you're never pasting code that references a file you haven't created yet.
+
 ## Table of Contents
 
 * [Prerequisites](#prerequisites)
 * [What We're Building](#what-were-building)
 * [How This Will Work](#how-this-will-work)
 * [Project Setup](#project-setup)
-* [Wallet Connection](#wallet-connection)
-* [The Upgrade Account Section](#the-upgrade-account-section)
-* [The Activity Log](#the-activity-log)
-* [The Claim Feed UI](#the-claim-feed-ui)
-* [Integrating Delegation Redemption](#integrating-delegation-redemption)
+* [Checkpoint 1: Wallet Connection](#checkpoint-1-wallet-connection)
+* [Checkpoint 2: The Delegated Staking Wizard](#checkpoint-2-the-delegated-staking-wizard)
+* [Checkpoint 3: The Claim Feed](#checkpoint-3-the-claim-feed)
+* [Checkpoint 4: The Backend Relayer](#checkpoint-4-the-backend-relayer)
+* [Checkpoint 5: The Activity Log](#checkpoint-5-the-activity-log)
+* [Checkpoint 6: Assembling the App Shell](#checkpoint-6-assembling-the-app-shell)
+* [Troubleshooting](#troubleshooting)
+* [Conclusion](#conclusion)
 
 ---
 
@@ -172,9 +177,9 @@ export const BUDGET_START_BACKDATE_SECONDS = 3_600; // 1 hour
 
 ---
 
-## Wallet Connection
+## Checkpoint 1: Wallet Connection
 
-Before we can do anything onchain, we need to connect to the user's MetaMask wallet and make sure they are on the correct network.
+Before we can do anything onchain, we need to connect to the user's MetaMask wallet and make sure they are on the correct network. This checkpoint ends with a page that actually runs — nothing fancy yet, just a header and a working Connect button.
 
 ### 1. Define the Chain
 
@@ -396,12 +401,40 @@ export function ConnectButton() {
 }
 ```
 
+### 5. Wire It Up
+
+Everything above exists, but nothing renders it yet. Create `src/app/page.tsx`:
+
+```tsx
+// src/app/page.tsx
+import { ConnectButton } from '@/components/ConnectButton';
+
+export default function Home() {
+  return (
+    <main className="min-h-screen bg-[#0a0a0a] text-white py-16 px-4 sm:px-6 lg:px-8 selection:bg-white selection:text-black font-sans">
+      <div className="max-w-3xl mx-auto">
+        <header className="flex justify-between items-start mb-16 border-b border-white/10 pb-8">
+          <div>
+            <h1 className="text-4xl font-black tracking-tighter text-white uppercase">
+              Intuition<br/><span className="text-white/50">Claim Feed</span>
+            </h1>
+            <p className="text-white/60 mt-4 text-sm uppercase tracking-widest font-semibold">Browse claims. Support truth. Oppose falsehood.</p>
+          </div>
+          <ConnectButton />
+        </header>
+      </div>
+    </main>
+  );
+}
+```
+
+> **Checkpoint — run it.** `npm run dev`, open `http://localhost:3000`. You should see the Claim Feed header and a Connect button; clicking it opens MetaMask and, once connected, shows your truncated address switched to Intuition Mainnet. Nothing else exists yet — that's the rest of this tutorial, built on top of this exact file.
 
 ---
 
-## The Upgrade Account Section
+## Checkpoint 2: The Delegated Staking Wizard
 
-This is the core of the tutorial. We will build both the UI and the delegation logic together.
+This is the core of the tutorial. We will build both the delegation logic and the UI that drives it.
 
 Rather than one big "Enable" button that fires four wallet prompts in a row, we walk the user through the setup **one step at a time** — each step is its own action with its own explainer, and the wizard only advances once the previous step confirms. The four steps are:
 
@@ -412,377 +445,11 @@ Rather than one big "Enable" button that fires four wallet prompts in a row, we 
 
 We track how far the user has got with a small `{ deployed, funded, approved }` record in `localStorage`, plus an on-chain `isDeployed()` check so a returning user resumes at the right step. Step 4 is "done" once a signed delegation exists.
 
-### The Upgrade Account UI
-
-Create `src/components/UpgradeAccount.tsx`. It takes the delegation state as a prop (a parent component owns the single `useAdminDelegation()` instance — see [The App Shell](#the-app-shell) below) and renders one of two things:
-
-* **No delegation yet** — the wizard. `currentIndex` is the first step in `SETUP_STEPS` whose flag in `wizard` is still false; we render only that step (rail, title, `detail`, its optional input, one button) and call the matching hook action on click.
-* **Delegation active** — the HSA address (copy + explorer), live balance, the daily-allowance meter, and the on-chain "Disable" button.
-
-<details>
-<summary>View <code>src/components/UpgradeAccount.tsx</code></summary>
-
-```tsx
-// src/components/UpgradeAccount.tsx
-'use client';
-
-import { useState, useEffect } from 'react';
-import { useWallet } from '@/lib/WalletContext';
-import { useAdminDelegation, SETUP_STEPS } from '@/hooks/useAdminDelegation';
-import { intuitionMainnet } from '@/lib/chains';
-import { formatEther, parseEther } from 'viem';
-
-function formatCountdown(secondsLeft: number): string {
-  if (secondsLeft <= 0) return 'now';
-  const h = Math.floor(secondsLeft / 3600);
-  const m = Math.floor((secondsLeft % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m`;
-  return `${secondsLeft}s`;
-}
-
-export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDelegation> }) {
-  const { address } = useWallet();
-  const {
-    smartAccount,
-    delegation,
-    error,
-    busyStep,
-    isBusy,
-    wizard,
-    deployHsa,
-    fundHsa,
-    approveMultiVault,
-    signDelegation,
-    revokeDelegation,
-    hsaBalance,
-    dailyCap,
-    periodAvailable,
-    periodResetsAt,
-  } = state;
-  const [fundAmount, setFundAmount] = useState('5');
-  const [cap, setCap] = useState('1');
-  const [copied, setCopied] = useState(false);
-  const [nowSec, setNowSec] = useState(0);
-
-  useEffect(() => {
-    const update = () => setNowSec(Math.floor(Date.now() / 1000));
-    update();
-    const id = setInterval(update, 15000);
-    return () => clearInterval(id);
-  }, []);
-
-  if (!address) return null;
-
-  const hsaAddress = smartAccount?.address;
-  const explorerBase = intuitionMainnet.blockExplorers?.default.url;
-
-  let capWei = BigInt(0);
-  try {
-    capWei = parseEther(dailyCap || '0');
-  } catch {}
-  const availableWei = periodAvailable ?? capWei;
-  const allowancePct =
-    capWei > BigInt(0)
-      ? Math.min(100, Math.max(0, Number((availableWei * BigInt(10000)) / capWei) / 100))
-      : 0;
-  const resetsInSeconds = periodResetsAt && nowSec ? periodResetsAt - nowSec : null;
-
-  // First step that isn't done yet.
-  const currentIndex = !wizard.deployed ? 0 : !wizard.funded ? 1 : !wizard.approved ? 2 : 3;
-  const step = SETUP_STEPS[currentIndex];
-
-  const runCurrentStep = () => {
-    if (step.key === 'deploy') deployHsa();
-    else if (step.key === 'fund') fundHsa(fundAmount);
-    else if (step.key === 'approve') approveMultiVault();
-    else signDelegation(cap, 500);
-  };
-
-  const stepBusy = busyStep === step.key;
-  const stepDisabled =
-    isBusy ||
-    !smartAccount ||
-    (step.key === 'fund' && Number(fundAmount) <= 0) ||
-    (step.key === 'sign' && Number(cap) <= 0);
-
-  const copyHsa = async () => {
-    if (!hsaAddress) return;
-    try {
-      await navigator.clipboard.writeText(hsaAddress);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {}
-  };
-
-  const hsaLine = hsaAddress && (
-    <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
-      <span className="text-white/40 uppercase tracking-widest">HSA</span>
-      <code className="text-white/70 break-all">{hsaAddress}</code>
-      <button onClick={copyHsa} className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10">
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-      {explorerBase && (
-        <a
-          href={`${explorerBase}/address/${hsaAddress}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10"
-        >
-          Explorer &#8599;
-        </a>
-      )}
-    </div>
-  );
-
-  return (
-    <div className="mb-8 p-6 bg-white/5 border border-white/10 rounded-lg">
-      <div className="flex justify-between items-start flex-wrap gap-4">
-        <div>
-          <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
-          <p className="text-sm text-white/60 max-w-md">
-            Your smart account holds the budget; a daily-capped delegation lets our relayer submit deposits from it and cover the gas &mdash; so Support / Oppose never opens your wallet.
-          </p>
-        </div>
-
-        {delegation && (
-          <button
-            onClick={revokeDelegation}
-            disabled={isBusy}
-            className="px-4 py-2 border border-red-500/50 text-red-400 font-bold uppercase tracking-wider text-sm hover:bg-red-500/10 disabled:opacity-50 transition-colors rounded"
-          >
-            {busyStep === 'revoke' ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
-          </button>
-        )}
-      </div>
-
-      {/* One-step-at-a-time wizard */}
-      {!delegation && (
-        <div className="mt-5 border-t border-white/10 pt-5">
-          {/* progress rail */}
-          <div className="flex items-center gap-2 mb-5">
-            {SETUP_STEPS.map((s, i) => {
-              const done = i < currentIndex;
-              const active = i === currentIndex;
-              return (
-                <div key={s.key} className="flex items-center gap-2 flex-1 last:flex-none">
-                  <span
-                    className={`shrink-0 w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold ${
-                      done
-                        ? 'bg-green-500 border-green-500 text-black'
-                        : active
-                          ? 'border-white text-white'
-                          : 'border-white/25 text-white/40'
-                    }`}
-                  >
-                    {done ? '✓' : i + 1}
-                  </span>
-                  {i < SETUP_STEPS.length - 1 && (
-                    <span className={`h-px flex-1 ${done ? 'bg-green-500/60' : 'bg-white/15'}`} />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="text-[11px] uppercase tracking-widest text-white/40 mb-1">
-            Step {currentIndex + 1} of {SETUP_STEPS.length}
-          </div>
-          <div className="text-white font-semibold mb-1">{step.title}</div>
-          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">
-            {step.detail}
-            {step.docUrl && (
-              <>
-                {' '}
-                <a
-                  href={step.docUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap"
-                >
-                  {step.docLabel ?? 'reference ↗'}
-                </a>
-              </>
-            )}
-          </p>
-
-          <div className="flex items-end gap-3 flex-wrap">
-            {step.key === 'fund' && (
-              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
-                Amount
-                <div className="flex items-center gap-1 mt-1">
-                  <input
-                    type="number"
-                    value={fundAmount}
-                    onChange={(e) => setFundAmount(e.target.value)}
-                    disabled={isBusy}
-                    min="0"
-                    step="any"
-                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
-                  />
-                  <span className="text-white/60 text-xs">TRUST</span>
-                </div>
-              </label>
-            )}
-            {step.key === 'sign' && (
-              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
-                Daily limit
-                <div className="flex items-center gap-1 mt-1">
-                  <input
-                    type="number"
-                    value={cap}
-                    onChange={(e) => setCap(e.target.value)}
-                    disabled={isBusy}
-                    min="0"
-                    step="any"
-                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
-                  />
-                  <span className="text-white/60 text-xs">TRUST / day</span>
-                </div>
-              </label>
-            )}
-
-            <button
-              onClick={runCurrentStep}
-              disabled={stepDisabled}
-              className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
-            >
-              {stepBusy ? 'Working…' : step.action}
-            </button>
-
-            {stepBusy && (
-              <span className="text-xs text-white/50">
-                {step.key === 'sign' ? 'Sign in your wallet…' : 'Confirm in your wallet…'}
-              </span>
-            )}
-          </div>
-
-          {wizard.deployed && hsaAddress && <div className="mt-4">{hsaLine}</div>}
-          {wizard.deployed && hsaBalance !== null && (
-            <div className="mt-2 text-xs text-white/45">
-              HSA balance: {Number(formatEther(hsaBalance)).toFixed(3)} TRUST
-            </div>
-          )}
-          <p className="mt-4 text-xs text-white/35">
-            Four one-time steps. Revoking later sweeps any unspent HSA balance back to your wallet.
-          </p>
-        </div>
-      )}
-
-      {delegation && (
-        <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded">
-          <div className="mb-3 font-bold">Delegated staking is active.</div>
-
-          {hsaAddress && (
-            <div className="mb-3">
-              <div className="text-xs text-green-300/70 uppercase tracking-widest mb-1">Hybrid Smart Account</div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <code className="text-xs text-green-200 break-all font-mono">{hsaAddress}</code>
-                <button
-                  onClick={copyHsa}
-                  className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10"
-                >
-                  {copied ? 'Copied' : 'Copy'}
-                </button>
-                {explorerBase && (
-                  <a
-                    href={`${explorerBase}/address/${hsaAddress}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10"
-                  >
-                    Explorer &#8599;
-                  </a>
-                )}
-              </div>
-            </div>
-          )}
-
-          {hsaBalance !== null && (
-            <div className="flex justify-between text-xs mb-3 text-green-300">
-              <span>HSA Balance</span>
-              <span>{Number(formatEther(hsaBalance)).toFixed(3)} TRUST</span>
-            </div>
-          )}
-
-          {capWei > BigInt(0) && (
-            <div>
-              <div className="flex justify-between text-xs mb-1 text-green-300">
-                <span>Daily Allowance Remaining</span>
-                <span>
-                  {Number(formatEther(availableWei)).toFixed(3)} / {Number(formatEther(capWei)).toFixed(3)} TRUST
-                  {resetsInSeconds !== null ? ` · resets in ${formatCountdown(resetsInSeconds)}` : ''}
-                </span>
-              </div>
-              <div className="w-full bg-black/50 h-2 rounded-full overflow-hidden">
-                <div
-                  className="bg-green-500 h-full transition-all duration-500"
-                  style={{ width: `${allowancePct}%` }}
-                ></div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded break-words">
-          Error: {error}
-        </div>
-      )}
-    </div>
-  );
-}
-```
-</details>
-
-### The App Shell
-
-`UpgradeAccount` takes its state as a prop so that **one** `useAdminDelegation()` instance can be shared with the code that gates the feed. The App Shell also wraps everything in a `TxLogProvider` and mounts the `TxLogPanel` (both built in [The Activity Log](#the-activity-log) below). Create `src/components/AppShell.tsx`:
-
-```tsx
-// src/components/AppShell.tsx
-'use client';
-
-import { useWallet } from '@/lib/WalletContext';
-import { useAdminDelegation } from '@/hooks/useAdminDelegation';
-import { TxLogProvider } from '@/lib/TxLogContext';
-import { UpgradeAccount } from './UpgradeAccount';
-import { ClaimFeed } from './ClaimFeed';
-import { TxLogPanel } from './TxLogPanel';
-
-export function AppShell() {
-  const { address } = useWallet();
-  const delegationState = useAdminDelegation();
-
-  return (
-    <TxLogProvider>
-      <UpgradeAccount state={delegationState} />
-
-      {address && delegationState.delegation ? (
-        <div className="mt-20 pb-16">
-          <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">
-            Activity Feed
-          </h2>
-          <ClaimFeed />
-        </div>
-      ) : (
-        <p className="mt-16 text-center text-white/30 font-mono text-xs uppercase tracking-widest">
-          {address ? 'Complete delegated staking setup to open the claim feed' : 'Connect your wallet to get started'}
-        </p>
-      )}
-
-      <TxLogPanel />
-    </TxLogProvider>
-  );
-}
-```
-
-Render `<AppShell />` from `src/app/page.tsx` (inside the page's centered container, below the header). The claim feed stays hidden until the four-step setup is finished.
+We'll build the hook that implements all four steps first, then the UI that drives it — so by the time the component needs `useAdminDelegation`, it already exists.
 
 ### The Delegation Hook
 
-Now create `src/hooks/useAdminDelegation.ts`. This is where all the logic lives. It exposes the four step actions (`deployHsa`, `fundHsa`, `approveMultiVault`, `signDelegation`), a `wizard` progress record, a `busyStep` marker for the spinner, plus everything the active-state UI needs. Each action sets `busyStep`, runs its one on-chain (or, for step 4, off-chain) operation, and flips its `wizard` flag on success — so the component always renders the first unfinished step.
+Create `src/hooks/useAdminDelegation.ts`. This is where all the logic lives. It exposes the four step actions (`deployHsa`, `fundHsa`, `approveMultiVault`, `signDelegation`), a `wizard` progress record, a `busyStep` marker for the spinner, plus everything the active-state UI needs. Each action sets `busyStep`, runs its one on-chain (or, for step 4, off-chain) operation, and flips its `wizard` flag on success — so the component always renders the first unfinished step.
 
 **What does approving the MultiVault actually do?**
 
@@ -1404,182 +1071,322 @@ export function useAdminDelegation() {
 ```
 </details>
 
----
+### The Upgrade Account UI
 
-## The Activity Log
+Create `src/components/UpgradeAccount.tsx`. It takes the delegation state as a prop (a parent component owns the single `useAdminDelegation()` instance — for now that's `page.tsx`, below; we'll lift it into its own composition component in [Checkpoint 6](#checkpoint-6-assembling-the-app-shell)) and renders one of two things:
 
-A single click in the feed can fire more than one delegated call - switching sides is a `redeem` **then** a `deposit`. To make that legible without cluttering the claim card, every op is recorded in a bottom-docked, expandable panel: the human action, the raw MultiVault call, status, and a link to the transaction. The claim card only ever shows the *current* state; the panel is the history.
-
-It's a small React context plus a presentational component.
-
-```tsx
-// src/lib/TxLogContext.tsx
-'use client';
-
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
-
-export type TxLogEntry = {
-  id: string;
-  ts: number;
-  kind: 'deposit' | 'redeem';
-  side: 'support' | 'oppose';
-  claim: string;
-  termId: string;
-  status: 'pending' | 'success' | 'error';
-  hash?: string;
-  error?: string;
-};
-
-type NewEntry = Pick<TxLogEntry, 'kind' | 'side' | 'claim' | 'termId'>;
-
-type TxLogValue = {
-  entries: TxLogEntry[];
-  addEntry: (e: NewEntry) => string;
-  updateEntry: (id: string, patch: Partial<TxLogEntry>) => void;
-  clear: () => void;
-};
-
-const TxLogContext = createContext<TxLogValue | null>(null);
-
-export function TxLogProvider({ children }: { children: ReactNode }) {
-  const [entries, setEntries] = useState<TxLogEntry[]>([]);
-
-  const addEntry = useCallback((e: NewEntry) => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setEntries((prev) => [{ ...e, id, ts: Date.now(), status: 'pending' }, ...prev]);
-    return id;
-  }, []);
-
-  const updateEntry = useCallback((id: string, patch: Partial<TxLogEntry>) => {
-    setEntries((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
-  }, []);
-
-  const clear = useCallback(() => setEntries([]), []);
-
-  return (
-    <TxLogContext.Provider value={{ entries, addEntry, updateEntry, clear }}>{children}</TxLogContext.Provider>
-  );
-}
-
-export function useTxLog() {
-  const ctx = useContext(TxLogContext);
-  if (!ctx) throw new Error('useTxLog must be used within a TxLogProvider');
-  return ctx;
-}
-
-export const describeEntry = (e: TxLogEntry) =>
-  `${e.kind === 'deposit' ? 'Deposit' : 'Withdraw'} ${e.side === 'support' ? 'Support' : 'Oppose'}`;
-
-export const callSignature = (e: TxLogEntry) =>
-  e.kind === 'deposit'
-    ? 'MultiVault.deposit(receiver, termId, curveId, minShares)'
-    : 'MultiVault.redeem(receiver, termId, curveId, shares, minAssets)';
-```
-
-The panel itself just renders `entries` (newest first) and remembers whether it's open in `localStorage`:
+* **No delegation yet** — the wizard. `currentIndex` is the first step in `SETUP_STEPS` whose flag in `wizard` is still false; we render only that step (rail, title, `detail`, its optional input, one button) and call the matching hook action on click.
+* **Delegation active** — the HSA address (copy + explorer), live balance, the daily-allowance meter, and the on-chain "Disable" button.
 
 <details>
-<summary>View <code>src/components/TxLogPanel.tsx</code></summary>
+<summary>View <code>src/components/UpgradeAccount.tsx</code></summary>
 
 ```tsx
-// src/components/TxLogPanel.tsx
+// src/components/UpgradeAccount.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useWallet } from '@/lib/WalletContext';
+import { useAdminDelegation, SETUP_STEPS } from '@/hooks/useAdminDelegation';
 import { intuitionMainnet } from '@/lib/chains';
-import { useTxLog, describeEntry, callSignature, type TxLogEntry } from '@/lib/TxLogContext';
+import { formatEther, parseEther } from 'viem';
 
-const STORAGE_KEY = 'intuition_txlog_open';
-const explorerBase = intuitionMainnet.blockExplorers?.default.url;
-
-const readOpen = (): boolean => {
-  try {
-    return localStorage.getItem(STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-};
-
-function StatusDot({ status }: { status: TxLogEntry['status'] }) {
-  const color =
-    status === 'success' ? 'bg-green-500' : status === 'error' ? 'bg-red-500' : 'bg-amber-400 animate-pulse';
-  return <span className={`inline-block w-2 h-2 rounded-full ${color}`} />;
+function formatCountdown(secondsLeft: number): string {
+  if (secondsLeft <= 0) return 'now';
+  const h = Math.floor(secondsLeft / 3600);
+  const m = Math.floor((secondsLeft % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${secondsLeft}s`;
 }
 
-export function TxLogPanel() {
-  const { entries, clear } = useTxLog();
-  const [open, setOpen] = useState(readOpen);
+export function UpgradeAccount({ state }: { state: ReturnType<typeof useAdminDelegation> }) {
+  const { address } = useWallet();
+  const {
+    smartAccount,
+    delegation,
+    error,
+    busyStep,
+    isBusy,
+    wizard,
+    deployHsa,
+    fundHsa,
+    approveMultiVault,
+    signDelegation,
+    revokeDelegation,
+    hsaBalance,
+    dailyCap,
+    periodAvailable,
+    periodResetsAt,
+  } = state;
+  const [fundAmount, setFundAmount] = useState('5');
+  const [cap, setCap] = useState('1');
+  const [copied, setCopied] = useState(false);
+  const [nowSec, setNowSec] = useState(0);
 
-  const toggle = () => {
-    setOpen((v) => {
-      try {
-        localStorage.setItem(STORAGE_KEY, v ? '0' : '1');
-      } catch {}
-      return !v;
-    });
+  useEffect(() => {
+    const update = () => setNowSec(Math.floor(Date.now() / 1000));
+    update();
+    const id = setInterval(update, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!address) return null;
+
+  const hsaAddress = smartAccount?.address;
+  const explorerBase = intuitionMainnet.blockExplorers?.default.url;
+
+  let capWei = BigInt(0);
+  try {
+    capWei = parseEther(dailyCap || '0');
+  } catch {}
+  const availableWei = periodAvailable ?? capWei;
+  const allowancePct =
+    capWei > BigInt(0)
+      ? Math.min(100, Math.max(0, Number((availableWei * BigInt(10000)) / capWei) / 100))
+      : 0;
+  const resetsInSeconds = periodResetsAt && nowSec ? periodResetsAt - nowSec : null;
+
+  // First step that isn't done yet.
+  const currentIndex = !wizard.deployed ? 0 : !wizard.funded ? 1 : !wizard.approved ? 2 : 3;
+  const step = SETUP_STEPS[currentIndex];
+
+  const runCurrentStep = () => {
+    if (step.key === 'deploy') deployHsa();
+    else if (step.key === 'fund') fundHsa(fundAmount);
+    else if (step.key === 'approve') approveMultiVault();
+    else signDelegation(cap, 500);
   };
 
-  if (entries.length === 0) return null;
+  const stepBusy = busyStep === step.key;
+  const stepDisabled =
+    isBusy ||
+    !smartAccount ||
+    (step.key === 'fund' && Number(fundAmount) <= 0) ||
+    (step.key === 'sign' && Number(cap) <= 0);
 
-  const pending = entries.filter((e) => e.status === 'pending').length;
-  const failed = entries.filter((e) => e.status === 'error').length;
+  const copyHsa = async () => {
+    if (!hsaAddress) return;
+    try {
+      await navigator.clipboard.writeText(hsaAddress);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+
+  const hsaLine = hsaAddress && (
+    <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+      <span className="text-white/40 uppercase tracking-widest">HSA</span>
+      <code className="text-white/70 break-all">{hsaAddress}</code>
+      <button onClick={copyHsa} className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10">
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      {explorerBase && (
+        <a
+          href={`${explorerBase}/address/${hsaAddress}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="uppercase tracking-widest px-1.5 py-0.5 border border-white/15 rounded hover:bg-white/10"
+        >
+          Explorer &#8599;
+        </a>
+      )}
+    </div>
+  );
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-white/15 bg-[#0a0a0a]/95 backdrop-blur">
-      <button
-        onClick={toggle}
-        className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-mono uppercase tracking-widest text-white/60 hover:text-white transition-colors"
-      >
-        <span>{open ? '▾' : '▸'}</span>
-        <span>Delegated activity log</span>
-        <span className="text-white/30">·</span>
-        <span>{entries.length} op{entries.length === 1 ? '' : 's'}</span>
-        {pending > 0 && <span className="text-amber-400">· {pending} pending</span>}
-        {failed > 0 && <span className="text-red-400">· {failed} failed</span>}
-        <span className="ml-auto flex items-center gap-3">
-          {open && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={(e) => {
-                e.stopPropagation();
-                clear();
-              }}
-              className="text-white/30 hover:text-white/70 normal-case tracking-normal"
-            >
-              clear
-            </span>
-          )}
-        </span>
-      </button>
+    <div className="mb-8 p-6 bg-white/5 border border-white/10 rounded-lg">
+      <div className="flex justify-between items-start flex-wrap gap-4">
+        <div>
+          <h3 className="text-lg font-bold text-white mb-2 uppercase tracking-wide">Delegated Staking</h3>
+          <p className="text-sm text-white/60 max-w-md">
+            Your smart account holds the budget; a daily-capped delegation lets our relayer submit deposits from it and cover the gas &mdash; so Support / Oppose never opens your wallet.
+          </p>
+        </div>
 
-      {open && (
-        <div className="max-h-[38vh] overflow-y-auto border-t border-white/10 px-4 py-2 text-xs font-mono">
-          {entries.map((e) => (
-            <div key={e.id} className="flex items-start gap-3 py-2 border-b border-white/5 last:border-0">
-              <StatusDot status={e.status} />
-              <span className="text-white/30 shrink-0 w-16">
-                {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="text-white/80">
-                  {describeEntry(e)} <span className="text-white/35">— {e.claim}</span>
+        {delegation && (
+          <button
+            onClick={revokeDelegation}
+            disabled={isBusy}
+            className="px-4 py-2 border border-red-500/50 text-red-400 font-bold uppercase tracking-wider text-sm hover:bg-red-500/10 disabled:opacity-50 transition-colors rounded"
+          >
+            {busyStep === 'revoke' ? 'Revoking...' : 'Disable Delegated Staking (On-Chain)'}
+          </button>
+        )}
+      </div>
+
+      {/* One-step-at-a-time wizard */}
+      {!delegation && (
+        <div className="mt-5 border-t border-white/10 pt-5">
+          {/* progress rail */}
+          <div className="flex items-center gap-2 mb-5">
+            {SETUP_STEPS.map((s, i) => {
+              const done = i < currentIndex;
+              const active = i === currentIndex;
+              return (
+                <div key={s.key} className="flex items-center gap-2 flex-1 last:flex-none">
+                  <span
+                    className={`shrink-0 w-6 h-6 rounded-full border flex items-center justify-center text-[11px] font-bold ${
+                      done
+                        ? 'bg-green-500 border-green-500 text-black'
+                        : active
+                          ? 'border-white text-white'
+                          : 'border-white/25 text-white/40'
+                    }`}
+                  >
+                    {done ? '✓' : i + 1}
+                  </span>
+                  {i < SETUP_STEPS.length - 1 && (
+                    <span className={`h-px flex-1 ${done ? 'bg-green-500/60' : 'bg-white/15'}`} />
+                  )}
                 </div>
-                <div className="text-white/35 break-all">{callSignature(e)}</div>
-                {e.error && <div className="text-red-400/80 break-words mt-0.5">{e.error}</div>}
-              </div>
-              {e.hash && explorerBase && (
+              );
+            })}
+          </div>
+
+          <div className="text-[11px] uppercase tracking-widest text-white/40 mb-1">
+            Step {currentIndex + 1} of {SETUP_STEPS.length}
+          </div>
+          <div className="text-white font-semibold mb-1">{step.title}</div>
+          <p className="text-sm text-white/55 leading-relaxed mb-4 max-w-lg">
+            {step.detail}
+            {step.docUrl && (
+              <>
+                {' '}
                 <a
-                  href={`${explorerBase}/tx/${e.hash}`}
+                  href={step.docUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="shrink-0 text-white/40 hover:text-white uppercase tracking-widest"
+                  className="text-white/75 underline underline-offset-2 hover:text-white whitespace-nowrap"
                 >
-                  tx ↗
+                  {step.docLabel ?? 'reference ↗'}
                 </a>
-              )}
+              </>
+            )}
+          </p>
+
+          <div className="flex items-end gap-3 flex-wrap">
+            {step.key === 'fund' && (
+              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
+                Amount
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="number"
+                    value={fundAmount}
+                    onChange={(e) => setFundAmount(e.target.value)}
+                    disabled={isBusy}
+                    min="0"
+                    step="any"
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
+                  />
+                  <span className="text-white/60 text-xs">TRUST</span>
+                </div>
+              </label>
+            )}
+            {step.key === 'sign' && (
+              <label className="flex flex-col text-[10px] uppercase tracking-widest text-white/40">
+                Daily limit
+                <div className="flex items-center gap-1 mt-1">
+                  <input
+                    type="number"
+                    value={cap}
+                    onChange={(e) => setCap(e.target.value)}
+                    disabled={isBusy}
+                    min="0"
+                    step="any"
+                    className="px-3 py-2 bg-black border border-white/20 text-white rounded text-sm w-28 outline-none focus:border-white/50"
+                  />
+                  <span className="text-white/60 text-xs">TRUST / day</span>
+                </div>
+              </label>
+            )}
+
+            <button
+              onClick={runCurrentStep}
+              disabled={stepDisabled}
+              className="px-4 py-2 bg-white text-black font-bold uppercase tracking-wider text-sm hover:bg-white/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors rounded"
+            >
+              {stepBusy ? 'Working…' : step.action}
+            </button>
+
+            {stepBusy && (
+              <span className="text-xs text-white/50">
+                {step.key === 'sign' ? 'Sign in your wallet…' : 'Confirm in your wallet…'}
+              </span>
+            )}
+          </div>
+
+          {wizard.deployed && hsaAddress && <div className="mt-4">{hsaLine}</div>}
+          {wizard.deployed && hsaBalance !== null && (
+            <div className="mt-2 text-xs text-white/45">
+              HSA balance: {Number(formatEther(hsaBalance)).toFixed(3)} TRUST
             </div>
-          ))}
+          )}
+          <p className="mt-4 text-xs text-white/35">
+            Four one-time steps. Revoking later sweeps any unspent HSA balance back to your wallet.
+          </p>
+        </div>
+      )}
+
+      {delegation && (
+        <div className="mt-4 p-4 bg-green-500/10 border border-green-500/20 text-green-400 text-sm rounded">
+          <div className="mb-3 font-bold">Delegated staking is active.</div>
+
+          {hsaAddress && (
+            <div className="mb-3">
+              <div className="text-xs text-green-300/70 uppercase tracking-widest mb-1">Hybrid Smart Account</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <code className="text-xs text-green-200 break-all font-mono">{hsaAddress}</code>
+                <button
+                  onClick={copyHsa}
+                  className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10"
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                {explorerBase && (
+                  <a
+                    href={`${explorerBase}/address/${hsaAddress}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] uppercase tracking-widest px-2 py-0.5 border border-green-500/30 rounded hover:bg-green-500/10"
+                  >
+                    Explorer &#8599;
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
+
+          {hsaBalance !== null && (
+            <div className="flex justify-between text-xs mb-3 text-green-300">
+              <span>HSA Balance</span>
+              <span>{Number(formatEther(hsaBalance)).toFixed(3)} TRUST</span>
+            </div>
+          )}
+
+          {capWei > BigInt(0) && (
+            <div>
+              <div className="flex justify-between text-xs mb-1 text-green-300">
+                <span>Daily Allowance Remaining</span>
+                <span>
+                  {Number(formatEther(availableWei)).toFixed(3)} / {Number(formatEther(capWei)).toFixed(3)} TRUST
+                  {resetsInSeconds !== null ? ` · resets in ${formatCountdown(resetsInSeconds)}` : ''}
+                </span>
+              </div>
+              <div className="w-full bg-black/50 h-2 rounded-full overflow-hidden">
+                <div
+                  className="bg-green-500 h-full transition-all duration-500"
+                  style={{ width: `${allowancePct}%` }}
+                ></div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded break-words">
+          Error: {error}
         </div>
       )}
     </div>
@@ -1588,11 +1395,48 @@ export function TxLogPanel() {
 ```
 </details>
 
-`AppShell` already wraps the tree in `<TxLogProvider>` and renders `<TxLogPanel />` (see [The App Shell](#the-app-shell)).
+### Wire It Up
+
+Open `src/app/page.tsx`. It needs to become a client component — `useAdminDelegation` is a hook, and hooks can't run in a server component — and it needs to call that hook and render the wizard below the header.
+
+Add three imports, call the hook at the top of the component, and render `<UpgradeAccount>` below `<header>`:
+
+```tsx
+// src/app/page.tsx
+'use client';
+
+import { ConnectButton } from '@/components/ConnectButton';
+import { useAdminDelegation } from '@/hooks/useAdminDelegation';
+import { UpgradeAccount } from '@/components/UpgradeAccount';
+
+export default function Home() {
+  const delegationState = useAdminDelegation();
+
+  return (
+    <main className="min-h-screen bg-[#0a0a0a] text-white py-16 px-4 sm:px-6 lg:px-8 selection:bg-white selection:text-black font-sans">
+      <div className="max-w-3xl mx-auto">
+        <header className="flex justify-between items-start mb-16 border-b border-white/10 pb-8">
+          <div>
+            <h1 className="text-4xl font-black tracking-tighter text-white uppercase">
+              Intuition<br/><span className="text-white/50">Claim Feed</span>
+            </h1>
+            <p className="text-white/60 mt-4 text-sm uppercase tracking-widest font-semibold">Browse claims. Support truth. Oppose falsehood.</p>
+          </div>
+          <ConnectButton />
+        </header>
+
+        <UpgradeAccount state={delegationState} />
+      </div>
+    </main>
+  );
+}
+```
+
+> **Checkpoint — run it.** Connect your wallet and you'll see the live four-step wizard: Deploy, Fund, Approve, Sign delegation — each step runs for real against Intuition Mainnet and persists its progress in `localStorage`. This is the single most expensive part of the tutorial to test (it's real transactions on real TRUST), so it's worth confirming it works end-to-end here before moving on.
 
 ---
 
-## The Claim Feed UI
+## Checkpoint 3: The Claim Feed
 
 Now let's build the feed that displays all claims from the Intuition Protocol and lets users interact with them.
 
@@ -1702,6 +1546,71 @@ export function useClaimFeed(address: string | null) {
 }
 ```
 
+Before building the feed component itself, a quick detour. `ClaimFeed.tsx` logs every delegated call it makes to an activity panel via a `useTxLog()` hook — but we don't build the *visible* panel until [Checkpoint 5](#checkpoint-5-the-activity-log). The hook it depends on has to exist first though, or the import throws `useTxLog must be used within a TxLogProvider` the moment you connect a wallet. It's a small, dependency-free file (just React context), so we pull it forward now and build the panel UI that reads it later:
+
+```tsx
+// src/lib/TxLogContext.tsx
+'use client';
+
+import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+
+export type TxLogEntry = {
+  id: string;
+  ts: number;
+  kind: 'deposit' | 'redeem';
+  side: 'support' | 'oppose';
+  claim: string;
+  termId: string;
+  status: 'pending' | 'success' | 'error';
+  hash?: string;
+  error?: string;
+};
+
+type NewEntry = Pick<TxLogEntry, 'kind' | 'side' | 'claim' | 'termId'>;
+
+type TxLogValue = {
+  entries: TxLogEntry[];
+  addEntry: (e: NewEntry) => string;
+  updateEntry: (id: string, patch: Partial<TxLogEntry>) => void;
+  clear: () => void;
+};
+
+const TxLogContext = createContext<TxLogValue | null>(null);
+
+export function TxLogProvider({ children }: { children: ReactNode }) {
+  const [entries, setEntries] = useState<TxLogEntry[]>([]);
+
+  const addEntry = useCallback((e: NewEntry) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setEntries((prev) => [{ ...e, id, ts: Date.now(), status: 'pending' }, ...prev]);
+    return id;
+  }, []);
+
+  const updateEntry = useCallback((id: string, patch: Partial<TxLogEntry>) => {
+    setEntries((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
+  }, []);
+
+  const clear = useCallback(() => setEntries([]), []);
+
+  return (
+    <TxLogContext.Provider value={{ entries, addEntry, updateEntry, clear }}>{children}</TxLogContext.Provider>
+  );
+}
+
+export function useTxLog() {
+  const ctx = useContext(TxLogContext);
+  if (!ctx) throw new Error('useTxLog must be used within a TxLogProvider');
+  return ctx;
+}
+
+export const describeEntry = (e: TxLogEntry) =>
+  `${e.kind === 'deposit' ? 'Deposit' : 'Withdraw'} ${e.side === 'support' ? 'Support' : 'Oppose'}`;
+
+export const callSignature = (e: TxLogEntry) =>
+  e.kind === 'deposit'
+    ? 'MultiVault.deposit(receiver, termId, curveId, minShares)'
+    : 'MultiVault.redeem(receiver, termId, curveId, shares, minAssets)';
+```
 
 Now `src/components/ClaimFeed.tsx`. Each card is a **toggle**, driven by `held` (the side the wallet is on, or `null`):
 
@@ -2057,12 +1966,64 @@ export function ClaimFeed() {
 ```
 </details>
 
-The `/api/stake` route that `runDelegatedOp` posts to is built next - it now takes an `action` of `deposit` or `redeem`.
+### Wire It Up
 
+Open `src/app/page.tsx` again. Wrap the tree in `<TxLogProvider>` so `useTxLog()` has something to find, and render the feed once a wallet is connected and delegation is active — the same gating the real app ships with:
+
+```tsx
+// src/app/page.tsx
+'use client';
+
+import { useWallet } from '@/lib/WalletContext';
+import { ConnectButton } from '@/components/ConnectButton';
+import { useAdminDelegation } from '@/hooks/useAdminDelegation';
+import { UpgradeAccount } from '@/components/UpgradeAccount';
+import { TxLogProvider } from '@/lib/TxLogContext';
+import { ClaimFeed } from '@/components/ClaimFeed';
+
+export default function Home() {
+  const { address } = useWallet();
+  const delegationState = useAdminDelegation();
+  const { delegation } = delegationState;
+
+  return (
+    <main className="min-h-screen bg-[#0a0a0a] text-white py-16 px-4 sm:px-6 lg:px-8 selection:bg-white selection:text-black font-sans">
+      <div className="max-w-3xl mx-auto">
+        <header className="flex justify-between items-start mb-16 border-b border-white/10 pb-8">
+          <div>
+            <h1 className="text-4xl font-black tracking-tighter text-white uppercase">
+              Intuition<br/><span className="text-white/50">Claim Feed</span>
+            </h1>
+            <p className="text-white/60 mt-4 text-sm uppercase tracking-widest font-semibold">Browse claims. Support truth. Oppose falsehood.</p>
+          </div>
+          <ConnectButton />
+        </header>
+
+        <TxLogProvider>
+          <UpgradeAccount state={delegationState} />
+
+          {address && delegation && (
+            <div className="mt-20 pb-16">
+              <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">
+                Activity Feed
+              </h2>
+              <ClaimFeed />
+            </div>
+          )}
+        </TxLogProvider>
+      </div>
+    </main>
+  );
+}
+```
+
+> **Checkpoint — run it.** Once you've completed the wizard from Checkpoint 2, the feed appears below it: live claims from Intuition Mainnet, infinite scroll, your own positions highlighted. Clicking Support / Oppose will *call* `/api/stake` — which doesn't exist until the next section, so `runDelegatedOp`'s `fetch` will fail, `ClaimFeed`'s `catch` block will log an `error` entry to the (not-yet-visible) activity log and `alert()` the failure. That's expected — the backend is next.
+
+The `/api/stake` route that `runDelegatedOp` posts to is built next - it now takes an `action` of `deposit` or `redeem`.
 
 ---
 
-## Integrating Delegation Redemption
+## Checkpoint 4: The Backend Relayer
 
 Now the backend. `runDelegatedOp` in the feed posts `{ delegation, action, termId, curveId, userAddress, assets? }` to `/api/stake` for each op; the route redeems the delegation on-chain and pays the gas.
 
@@ -2234,9 +2195,15 @@ export async function POST(req: NextRequest) {
 }
 ```
 
+### No `page.tsx` change needed
+
+`ClaimFeed.tsx` was already calling `fetch('/api/stake')` back in Checkpoint 3 — it just didn't have anything to answer. This section makes that endpoint real; nothing in the frontend changes.
+
+> **Checkpoint — run it.** Support / Oppose now actually works end-to-end: deposit, withdraw, switch sides, all gasless. This is a fully functional app already — the activity log and the final `AppShell` composition in the next two sections are polish on top of a working product, not things it's waiting on.
+
 ### The `act()` state machine
 
-`ClaimFeed.tsx` (shown in full above) drives everything from `act(clicked)`:
+`ClaimFeed.tsx` (shown in full in Checkpoint 3) drives everything from `act(clicked)`:
 
 ```
 held === clicked        -> redeem(clicked)                    // withdraw
@@ -2246,6 +2213,233 @@ held == null             -> deposit(clicked)                  // open a position
 
 Each `runDelegatedOp` call adds a `pending` row to the activity log, `POST`s to `/api/stake`, and flips the row to `success` (with the tx hash) or `error` (with the revert reason). If the first op of a switch fails, the second never runs and the log shows exactly where it stopped. After the op(s), an optimistic update paints the new state immediately and `scheduleResync` does one `refetch()` ~4s later - guarded by `opSeq` so a rapid second click doesn't let a stale timer stomp the newer optimistic view.
 
+---
+
+## Checkpoint 5: The Activity Log
+
+A single click in the feed can fire more than one delegated call - switching sides is a `redeem` **then** a `deposit`. To make that legible without cluttering the claim card, every op is recorded in a bottom-docked, expandable panel: the human action, the raw MultiVault call, status, and a link to the transaction. The claim card only ever shows the *current* state; the panel is the history.
+
+The data side of this (`TxLogContext.tsx`) was already pulled forward in [Checkpoint 3](#checkpoint-3-the-claim-feed), since `ClaimFeed` needed `useTxLog()` to compile. Everything you did in Checkpoints 3 and 4 has been logging to that context all along — this checkpoint just builds the presentational panel that finally displays it.
+
+<details>
+<summary>View <code>src/components/TxLogPanel.tsx</code></summary>
+
+```tsx
+// src/components/TxLogPanel.tsx
+'use client';
+
+import { useState } from 'react';
+import { intuitionMainnet } from '@/lib/chains';
+import { useTxLog, describeEntry, callSignature, type TxLogEntry } from '@/lib/TxLogContext';
+
+const STORAGE_KEY = 'intuition_txlog_open';
+const explorerBase = intuitionMainnet.blockExplorers?.default.url;
+
+const readOpen = (): boolean => {
+  try {
+    return localStorage.getItem(STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+function StatusDot({ status }: { status: TxLogEntry['status'] }) {
+  const color =
+    status === 'success' ? 'bg-green-500' : status === 'error' ? 'bg-red-500' : 'bg-amber-400 animate-pulse';
+  return <span className={`inline-block w-2 h-2 rounded-full ${color}`} />;
+}
+
+export function TxLogPanel() {
+  const { entries, clear } = useTxLog();
+  const [open, setOpen] = useState(readOpen);
+
+  const toggle = () => {
+    setOpen((v) => {
+      try {
+        localStorage.setItem(STORAGE_KEY, v ? '0' : '1');
+      } catch {}
+      return !v;
+    });
+  };
+
+  if (entries.length === 0) return null;
+
+  const pending = entries.filter((e) => e.status === 'pending').length;
+  const failed = entries.filter((e) => e.status === 'error').length;
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-white/15 bg-[#0a0a0a]/95 backdrop-blur">
+      <button
+        onClick={toggle}
+        className="w-full flex items-center gap-3 px-4 py-2.5 text-xs font-mono uppercase tracking-widest text-white/60 hover:text-white transition-colors"
+      >
+        <span>{open ? '▾' : '▸'}</span>
+        <span>Delegated activity log</span>
+        <span className="text-white/30">·</span>
+        <span>{entries.length} op{entries.length === 1 ? '' : 's'}</span>
+        {pending > 0 && <span className="text-amber-400">· {pending} pending</span>}
+        {failed > 0 && <span className="text-red-400">· {failed} failed</span>}
+        <span className="ml-auto flex items-center gap-3">
+          {open && (
+            <span
+              role="button"
+              tabIndex={0}
+              onClick={(e) => {
+                e.stopPropagation();
+                clear();
+              }}
+              className="text-white/30 hover:text-white/70 normal-case tracking-normal"
+            >
+              clear
+            </span>
+          )}
+        </span>
+      </button>
+
+      {open && (
+        <div className="max-h-[38vh] overflow-y-auto border-t border-white/10 px-4 py-2 text-xs font-mono">
+          {entries.map((e) => (
+            <div key={e.id} className="flex items-start gap-3 py-2 border-b border-white/5 last:border-0">
+              <StatusDot status={e.status} />
+              <span className="text-white/30 shrink-0 w-16">
+                {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-white/80">
+                  {describeEntry(e)} <span className="text-white/35">— {e.claim}</span>
+                </div>
+                <div className="text-white/35 break-all">{callSignature(e)}</div>
+                {e.error && <div className="text-red-400/80 break-words mt-0.5">{e.error}</div>}
+              </div>
+              {e.hash && explorerBase && (
+                <a
+                  href={`${explorerBase}/tx/${e.hash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 text-white/40 hover:text-white uppercase tracking-widest"
+                >
+                  tx ↗
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+```
+</details>
+
+### Wire It Up
+
+One import, one line. Open `src/app/page.tsx`: import `TxLogPanel` and render it as the last child inside `<TxLogProvider>`:
+
+```tsx
+import { TxLogProvider } from '@/lib/TxLogContext';
+import { ClaimFeed } from '@/components/ClaimFeed';
+import { TxLogPanel } from '@/components/TxLogPanel';   {/* add this import */}
+
+// ...inside the component, as the last child of <TxLogProvider>:
+        <TxLogProvider>
+          <UpgradeAccount state={delegationState} />
+
+          {address && delegation && (
+            <div className="mt-20 pb-16">
+              <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">
+                Activity Feed
+              </h2>
+              <ClaimFeed />
+            </div>
+          )}
+
+          <TxLogPanel />   {/* add this line */}
+        </TxLogProvider>
+```
+
+> **Checkpoint — run it.** A bottom-docked panel appears, already populated with everything you did while testing Checkpoints 3 and 4 — proof that the log was decoupled from the display the whole time. Click it open to see every `deposit`/`redeem` with its status, raw call signature, and a link to the transaction.
+
+---
+
+## Checkpoint 6: Assembling the App Shell
+
+By now `page.tsx` has grown into: wallet state, the delegation hook, the wizard, a `TxLogProvider`, a gated feed, and the log panel, all assembled inline. `UpgradeAccount` takes its state as a prop so that **one** `useAdminDelegation()` instance can be shared with the code that gates the feed — that's been true since Checkpoint 2, with `page.tsx` itself as that one shared owner. This checkpoint is a pure refactor: lift that composition into its own component, `src/components/AppShell.tsx`, so `page.tsx` goes back to being just the page shell.
+
+```tsx
+// src/components/AppShell.tsx
+'use client';
+
+import { useWallet } from '@/lib/WalletContext';
+import { useAdminDelegation } from '@/hooks/useAdminDelegation';
+import { TxLogProvider } from '@/lib/TxLogContext';
+import { UpgradeAccount } from './UpgradeAccount';
+import { ClaimFeed } from './ClaimFeed';
+import { TxLogPanel } from './TxLogPanel';
+
+export function AppShell() {
+  const { address } = useWallet();
+  const delegationState = useAdminDelegation();
+
+  return (
+    <TxLogProvider>
+      <UpgradeAccount state={delegationState} />
+
+      {address && delegationState.delegation ? (
+        <div className="mt-20 pb-16">
+          <h2 className="text-sm font-bold text-white/50 mb-8 uppercase tracking-widest border-b border-white/10 pb-4">
+            Activity Feed
+          </h2>
+          <ClaimFeed />
+        </div>
+      ) : (
+        <p className="mt-16 text-center text-white/30 font-mono text-xs uppercase tracking-widest">
+          {address ? 'Complete delegated staking setup to open the claim feed' : 'Connect your wallet to get started'}
+        </p>
+      )}
+
+      <TxLogPanel />
+    </TxLogProvider>
+  );
+}
+```
+
+This is also where the "hide the feed until setup's done" gating becomes worth calling out explicitly: `{address && delegationState.delegation ? <ClaimFeed /> : <p>...</p>}` was already true of the inline version in `page.tsx` since Checkpoint 3 - lifting it here just gives it a name and a home, plus a friendlier message for the two states where the feed *isn't* shown (no wallet vs. wallet-but-no-delegation) instead of just omitting it silently.
+
+### Wire It Up
+
+Open `src/app/page.tsx` and replace the manually-assembled tree with `<AppShell />`:
+
+```tsx
+// src/app/page.tsx
+import { ConnectButton } from '@/components/ConnectButton';
+import { AppShell } from '@/components/AppShell';
+
+export default function Home() {
+  return (
+    <main className="min-h-screen bg-[#0a0a0a] text-white py-16 px-4 sm:px-6 lg:px-8 selection:bg-white selection:text-black font-sans">
+      <div className="max-w-3xl mx-auto">
+        <header className="flex justify-between items-start mb-16 border-b border-white/10 pb-8">
+          <div>
+            <h1 className="text-4xl font-black tracking-tighter text-white uppercase">
+              Intuition<br/><span className="text-white/50">Claim Feed</span>
+            </h1>
+            <p className="text-white/60 mt-4 text-sm uppercase tracking-widest font-semibold">Browse claims. Support truth. Oppose falsehood.</p>
+          </div>
+          <ConnectButton />
+        </header>
+
+        <AppShell />
+      </div>
+    </main>
+  );
+}
+```
+
+Note `page.tsx` drops back to a server component here — `'use client'` is gone, because nothing in this file calls a hook anymore. All the client-side state now lives inside `AppShell`.
+
+> **Checkpoint — run it.** Same app, identical behavior to Checkpoint 5 - this step changes nothing a user can see. `page.tsx` is now just the page shell, and `AppShell` owns the one `useAdminDelegation()` instance everything else reads from. This is also the final state of the app: everything from here matches the repo exactly.
+
+---
 
 ## Troubleshooting
 
