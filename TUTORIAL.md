@@ -218,8 +218,16 @@ Create `src/lib/WalletContext.tsx`. This context does three important things:
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { createWalletClient, custom, createPublicClient, http, WalletClient, PublicClient, Address } from 'viem';
+import { createWalletClient, custom, createPublicClient, http, WalletClient, PublicClient, Address, EIP1193Provider } from 'viem';
 import { intuitionMainnet } from './chains';
+
+// Augment Window with viem's own EIP-1193 provider type, so `window.ethereum`
+// is usable everywhere below without an `any` cast.
+declare global {
+  interface Window {
+    ethereum?: EIP1193Provider;
+  }
+}
 
 interface WalletContextType {
   address: Address | null;
@@ -239,14 +247,29 @@ const publicClient = createPublicClient({
 
 const WalletContext = createContext<WalletContextType | null>(null);
 
+// viem wraps the raw provider error, so the 4902 code can land on the error
+// itself or one level down in `.cause` - this reads it out without `any`.
+function getErrorCode(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'number') return code;
+  const cause = (err as { cause?: unknown }).cause;
+  if (typeof cause === 'object' && cause !== null) {
+    const causeCode = (cause as { code?: unknown }).code;
+    if (typeof causeCode === 'number') return causeCode;
+  }
+  return undefined;
+}
+
 // This helper switches the user to Intuition Mainnet.
 // If the chain hasn't been added to MetaMask yet (error 4902), it adds it first.
 async function switchToIntuition(client: WalletClient) {
   try {
     await client.switchChain({ id: intuitionMainnet.id });
-  } catch (err: any) {
-    const code = err?.code ?? err?.cause?.code;
-    if (code === 4902 || /Unrecognized chain/i.test(err?.message ?? '')) {
+  } catch (err) {
+    const code = getErrorCode(err);
+    const message = err instanceof Error ? err.message : '';
+    if (code === 4902 || /Unrecognized chain/i.test(message)) {
       await client.addChain({ chain: intuitionMainnet });
       await client.switchChain({ id: intuitionMainnet.id });
     } else {
@@ -260,14 +283,15 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
 
   const connect = async () => {
-    if (typeof window === 'undefined' || !(window as any).ethereum) {
+    if (typeof window === 'undefined' || !window.ethereum) {
       alert('Please install MetaMask!');
       return;
     }
+    const ethereum = window.ethereum;
     try {
       const client = createWalletClient({
         chain: intuitionMainnet,
-        transport: custom((window as any).ethereum),
+        transport: custom(ethereum),
       });
       const [addr] = await client.requestAddresses();
 
@@ -276,7 +300,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const boundClient = createWalletClient({
         account: addr,
         chain: intuitionMainnet,
-        transport: custom((window as any).ethereum),
+        transport: custom(ethereum),
       });
 
       await switchToIntuition(client);
@@ -300,13 +324,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   // Keep the app in sync if the user changes accounts in MetaMask
   useEffect(() => {
-    if (typeof window === 'undefined' || !(window as any).ethereum) return;
-    const handleAccountsChanged = (accounts: string[]) => {
-      if (accounts.length > 0) setAddress(accounts[0] as Address);
+    if (typeof window === 'undefined' || !window.ethereum) return;
+    const ethereum = window.ethereum;
+    const handleAccountsChanged = (accounts: Address[]) => {
+      if (accounts.length > 0) setAddress(accounts[0]);
       else disconnect();
     };
-    (window as any).ethereum.on('accountsChanged', handleAccountsChanged);
-    return () => (window as any).ethereum.removeListener('accountsChanged', handleAccountsChanged);
+    ethereum.on('accountsChanged', handleAccountsChanged);
+    return () => ethereum.removeListener('accountsChanged', handleAccountsChanged);
   }, []);
 
   return (
