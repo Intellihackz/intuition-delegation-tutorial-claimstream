@@ -161,6 +161,12 @@ export const REDEEM_SIG = 'redeem(address,bytes32,uint256,uint256,uint256)';
 // 4-byte selector). Both deposit() and redeem() take it first, so one pin works.
 export const DEPOSIT_OFFSET = { receiver: 4 } as const;
 
+// MultiVault approval flags (bitfield: DEPOSIT = 0b01, REDEMPTION = 0b10, BOTH = 0b11).
+// DEPOSIT lets the HSA open/add to positions crediting the EOA; REDEMPTION lets it
+// close the EOA's positions (proceeds still go to the EOA). This app's feed can
+// both stake and unstake (and switch sides), so it grants BOTH.
+export const ApprovalType = { NONE: 0, DEPOSIT: 1, REDEMPTION: 2, BOTH: 3 } as const;
+
 // The rolling window the delegated staking cap is measured over. The
 // NativeTokenPeriodTransfer caveat lets the relayer spend up to the chosen
 // amount per window, then refills automatically on the next one.
@@ -171,9 +177,86 @@ export const BUDGET_PERIOD_SECONDS = 86_400; // 1 day
 // delegated deposit doesn't revert with
 // `NativeTokenPeriodTransferEnforcer:transfer-not-started`.
 export const BUDGET_START_BACKDATE_SECONDS = 3_600; // 1 hour
-```
 
-> The real `src/lib/constants.ts` in the repo also exports `multiVaultAbi` (with `deposit`, `redeem`, `previewDeposit`, `previewRedeem`, `getShares`, `approve`) and an `ApprovalType` map (`NONE`/`DEPOSIT`/`REDEMPTION`/`BOTH`) used below - grab it from the repo so the imports resolve.
+// The minimal MultiVault ABI this app needs: write calls (deposit, redeem,
+// approve) and read helpers (previewDeposit, previewRedeem, getShares).
+export const multiVaultAbi = [
+  {
+    type: 'function',
+    name: 'deposit',
+    stateMutability: 'payable',
+    inputs: [
+      { name: 'receiver', type: 'address' },
+      { name: 'termId', type: 'bytes32' },
+      { name: 'curveId', type: 'uint256' },
+      { name: 'minShares', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'approve',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'sender', type: 'address' },
+      { name: 'approvalType', type: 'uint8' },
+    ],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'previewDeposit',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'termId', type: 'bytes32' },
+      { name: 'curveId', type: 'uint256' },
+      { name: 'assets', type: 'uint256' },
+    ],
+    outputs: [
+      { name: 'shares', type: 'uint256' },
+      { name: 'assetsAfterFees', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'redeem',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'receiver', type: 'address' },
+      { name: 'termId', type: 'bytes32' },
+      { name: 'curveId', type: 'uint256' },
+      { name: 'shares', type: 'uint256' },
+      { name: 'minAssets', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'previewRedeem',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'termId', type: 'bytes32' },
+      { name: 'curveId', type: 'uint256' },
+      { name: 'shares', type: 'uint256' },
+    ],
+    outputs: [
+      { name: 'assetsAfterFees', type: 'uint256' },
+      { name: 'sharesUsed', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'getShares',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'account', type: 'address' },
+      { name: 'termId', type: 'bytes32' },
+      { name: 'curveId', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+] as const;
+```
 
 ---
 
